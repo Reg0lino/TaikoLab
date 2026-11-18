@@ -27,6 +27,23 @@ def test_discover_fl_studio_stems_and_builds_mix(tmp_path: Path):
     assert main_audio.exists()
 
 
+def test_discover_demucs_stems_keeps_mp3_as_main_audio(tmp_path: Path):
+    stems_dir = tmp_path / "stems"
+    stems_dir.mkdir()
+    main_audio = tmp_path / "theleavingsongpart2.mp3"
+    main_audio.touch()
+    for stem_name in ("drums", "vocals", "bass", "instruments"):
+        (stems_dir / f"{stem_name}.wav").touch()
+
+    discovered_audio, stems = discover_song_files(tmp_path)
+
+    assert discovered_audio == main_audio
+    assert Path(stems.drums) == stems_dir / "drums.wav"
+    assert Path(stems.vocals) == stems_dir / "vocals.wav"
+    assert Path(stems.bass) == stems_dir / "bass.wav"
+    assert Path(stems.instruments) == stems_dir / "instruments.wav"
+
+
 def test_dsp_3band_separates_kick_and_crash(tmp_path: Path):
     sr = 44100
     y = np.zeros(sr * 2, dtype=np.float32)

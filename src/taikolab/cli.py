@@ -67,6 +67,7 @@ def _cmd_arrange(args: argparse.Namespace) -> None:
         tja_path,
         bpm_deadzone=cfg.settings.smooth_bpm_deadzone,
         normalize_scroll=cfg.settings.normalize_scroll_on_bpm_change,
+        target_highway_speed=cfg.settings.target_highway_speed,
     )
     print(format_chart_report(chart))
     print(f"\n[TaikoLab] Wrote chart -> {tja_path}")

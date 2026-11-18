@@ -1,4 +1,4 @@
-"""Hori Taiko USB Drum Ergonomics Filter (Intelligent Rolls & Kantan Easy Pauses)."""
+"""Hori ergonomics filter with source-supported rolls and Easy-mode phrase rests."""
 
 from __future__ import annotations
 
@@ -8,7 +8,10 @@ from taikolab.arranger.mapper_drums import PlacedCandidate
 from taikolab.arranger.quantizer import MeasureSlot
 from taikolab.arranger.section_builder import MeasurePlan
 from taikolab.config import AppConfig
-from taikolab.schemas import ChartMeasure, TaikoNote
+from taikolab.schemas import ChartMeasure, DifficultyLevel, TaikoNote
+
+_MAX_FILL_ROLLS_PER_COURSE = 3
+_MIN_ROLL_SPACING_MEASURES = 4
 
 
 def _slot_time(slot: MeasureSlot, s_idx: int) -> float:
@@ -21,48 +24,52 @@ def _is_on_strong_subdivision(s_idx: int, grid_size: int) -> bool:
     return (s_idx % step) == 0
 
 
-def _identify_drumroll_bars(
-    by_measure: list[dict[int, PlacedCandidate]],
-    slots: list[MeasureSlot],
-    plans: list[MeasurePlan],
-    is_oni: bool = False,
-) -> set[int]:
-    """Identify genuine buzz rolls and sustained fills for drumrolls."""
-    roll_bars: set[int] = set()
+def _find_fill_roll_span(
+    bar_dict: dict[int, PlacedCandidate],
+    slot: MeasureSlot,
+    min_duration_sec: float,
+) -> tuple[int, int] | None:
+    min_hits = 5
+    max_span_sec = min(1.2, (slot.end_sec - slot.start_sec) * 0.8)
+    drum_events = sorted(
+        (
+            (s_idx, candidate)
+            for s_idx, candidate in bar_dict.items()
+            if candidate.source.startswith("drum:")
+        ),
+        key=lambda item: item[1].time_sec,
+    )
+    best: tuple[int, int, int, int] | None = None
 
-    for m_idx, (slot, plan) in enumerate(zip(slots, plans)):
-        if plan.follow_mode == "chaos_roll":
-            roll_bars.add(m_idx)
-            continue
+    for start_idx in range(len(drum_events)):
+        previous_source = ""
+        source_run = 0
+        longest_source_run = 0
+        for end_idx in range(start_idx, len(drum_events)):
+            start_time = drum_events[start_idx][1].time_sec
+            end_time = drum_events[end_idx][1].time_sec
+            if end_time - start_time > max_span_sec:
+                break
+            if end_idx > start_idx and end_time - drum_events[end_idx - 1][1].time_sec > 0.18:
+                break
 
-        bar_dict = by_measure[m_idx]
-        bar_dur = slot.end_sec - slot.start_sec
-        if bar_dur < 0.60:
-            continue
+            source = drum_events[end_idx][1].source.partition(":")[2]
+            source_run = source_run + 1 if source == previous_source else 1
+            previous_source = source
+            longest_source_run = max(longest_source_run, source_run)
+            hit_count = end_idx - start_idx + 1
+            span = end_time - start_time
+            is_fill = longest_source_run >= 3
+            if hit_count < min_hits or span < min_duration_sec or not is_fill:
+                continue
 
-        # In Oni mode, players want to hit actual drum fills! Only make a roll if it's a genuine rapid buzz roll (8+ hits)
-        if is_oni:
-            if len(bar_dict) >= 12 and slot.bpm >= 215.0 and plan.fold_blasts_to_rolls:
-                roll_bars.add(m_idx)
-            continue
+            proposal = (hit_count, end_idx - start_idx, drum_events[start_idx][0], drum_events[end_idx][0])
+            if best is None or proposal[:2] > best[:2]:
+                best = proposal
 
-        # For Hard, Normal, and Easy: convert dense rapid fills into yellow drumrolls
-        if len(bar_dict) >= 6:
-            late_hits = [s for s in sorted(bar_dict.keys()) if s >= slot.grid_size // 2]
-            fill_hits = sum(
-                1 for s in late_hits if any(k in bar_dict[s].source for k in ("tom", "snare", "slam"))
-            )
-            # Pick phrase-ending fills (end of 4-bar or 8-bar cycles)
-            if fill_hits >= 4 and (m_idx % 4 == 3 or m_idx in (7, 15, 31, 39, 47, 71, 95)):
-                roll_bars.add(m_idx)
-
-    # Ensure Easy and Normal have at least 2–3 fun rolls across the track
-    if not is_oni and len(roll_bars) < 2 and len(slots) >= 16:
-        candidate_bars = [i for i, b in enumerate(by_measure) if len(b) >= 5 and 6 <= i < len(slots) - 4]
-        for b_idx in candidate_bars[:3]:
-            roll_bars.add(b_idx)
-
-    return roll_bars
+    if best is None:
+        return None
+    return best[2], best[3]
 
 
 def apply_hori_ergonomics(
@@ -70,25 +77,25 @@ def apply_hori_ergonomics(
     slots: list[MeasureSlot],
     plans: list[MeasurePlan],
     cfg: AppConfig,
+    difficulty: DifficultyLevel,
 ) -> list[ChartMeasure]:
-    """Apply physical Hori limits, intelligent rolls & authentic Easy mode pauses."""
+    """Apply Hori limits, source-supported fill rolls, and Easy-mode phrase rests."""
     by_measure: list[dict[int, PlacedCandidate]] = [{} for _ in slots]
     for (m_idx, s_idx), cand in candidates.items():
         if 0 <= m_idx < len(slots):
             by_measure[m_idx][s_idx] = cand
 
-    is_easy = (plans[0].max_nps <= 2.6) if plans else False
-    is_oni = (plans[0].max_nps >= 9.0) if plans else False
+    roll_measures: set[int] = set()
+    # Only fold into drumrolls if explicitly in chaos_roll or extreme powerviolence blast-zone
+    for m_idx, (slot, plan) in enumerate(zip(slots, plans)):
+        if plan.follow_mode == "chaos_roll" or (plan.is_blast_zone and plan.fold_blasts_to_rolls and plan.max_nps >= 8.0):
+            bar_dur = slot.end_sec - slot.start_sec
+            if bar_dur >= cfg.hori.min_roll_duration_sec * 0.8 and len(by_measure[m_idx]) >= 4:
+                roll_measures.add(m_idx)
 
-    roll_measures = _identify_drumroll_bars(by_measure, slots, plans, is_oni=is_oni)
-
-    # Easy Mode (Kantan) Phrasing: 2 bars of quarter-note play followed by 1-2 bars of complete rest
-    if is_easy:
+    if difficulty == "easy":
         active_streak = 0
         for m_idx in range(len(slots)):
-            if m_idx in roll_measures:
-                active_streak = 0
-                continue
             if len(by_measure[m_idx]) > 0:
                 active_streak += 1
                 if active_streak > 2:
@@ -96,6 +103,36 @@ def apply_hori_ergonomics(
                     active_streak = 0
             else:
                 active_streak = 0
+
+    roll_candidates: list[tuple[int, tuple[int, int]]] = []
+    if difficulty in ("easy", "normal"):
+        for m_idx, (slot, bar_dict) in enumerate(zip(slots, by_measure)):
+            if m_idx in roll_measures or not bar_dict:
+                continue
+            span = _find_fill_roll_span(
+                bar_dict,
+                slot,
+                cfg.hori.min_roll_duration_sec,
+            )
+            if span is not None:
+                roll_candidates.append((m_idx, span))
+
+    spaced_rolls: list[tuple[int, tuple[int, int]]] = []
+    for candidate in roll_candidates:
+        if not spaced_rolls or candidate[0] - spaced_rolls[-1][0] >= _MIN_ROLL_SPACING_MEASURES:
+            spaced_rolls.append(candidate)
+    if len(spaced_rolls) > _MAX_FILL_ROLLS_PER_COURSE:
+        last_idx = len(spaced_rolls) - 1
+        selected_indices = [
+            round(i * last_idx / (_MAX_FILL_ROLLS_PER_COURSE - 1))
+            for i in range(_MAX_FILL_ROLLS_PER_COURSE)
+        ]
+        spaced_rolls = [spaced_rolls[i] for i in selected_indices]
+
+    fill_roll_spans = dict(spaced_rolls)
+    for m_idx, (start_slot, end_slot) in fill_roll_spans.items():
+        for s_idx in range(start_slot, end_slot + 1):
+            by_measure[m_idx].pop(s_idx, None)
 
     items: list[tuple[float, float, int, int, PlacedCandidate]] = []
     for m_idx, bar_dict in enumerate(by_measure):
@@ -161,6 +198,10 @@ def apply_hori_ergonomics(
         else:
             for s_idx, cand in filtered_by_measure[m_idx].items():
                 grid[s_idx] = int(cand.note_type)
+            if m_idx in fill_roll_spans:
+                start_slot, end_slot = fill_roll_spans[m_idx]
+                grid[start_slot] = TaikoNote.DRUMROLL.value
+                grid[end_slot] = TaikoNote.END.value
 
         measures.append(
             ChartMeasure(

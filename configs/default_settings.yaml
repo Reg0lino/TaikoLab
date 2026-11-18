@@ -11,7 +11,10 @@ global_audio_offset_ms: 0.0
 # Ignore tiny BPM wobbles smaller than this to prevent OpenTaiko scroll jitter
 smooth_bpm_deadzone: 2.5
 
-# If true, adjusts #SCROLL inversely on BPM changes to keep visual note speed steady
-normalize_scroll_on_bpm_change: false
+# Effective highway speed is BPM x SCROLL; this matches Dumpweed's accepted baseline.
+target_highway_speed: 101.343
+
+# Adjust #SCROLL inversely on BPM changes to keep note movement consistent.
+normalize_scroll_on_bpm_change: true
 
 default_preset: "punk_gallop"

@@ -1,11 +1,29 @@
 import re
 from pathlib import Path
 
+import pytest
+
 from taikolab.arranger.engine import arrange_song
 from taikolab.config import load_config
 from taikolab.exporters.diagnostics import analyze_course, format_chart_report
-from taikolab.exporters.tja_writer import measure_duration_sec, render_tja_text, write_tja_file
-from taikolab.schemas import BeatEvent, DrumHit, OnsetEvent, SongAnalysis, SongOverrides, TaikoNote, TempoRegion
+from taikolab.exporters.tja_writer import (
+    measure_duration_sec,
+    render_course_tja,
+    render_tja_text,
+    write_tja_file,
+)
+from taikolab.schemas import (
+    BeatEvent,
+    ChartDifficulty,
+    ChartMeasure,
+    DrumHit,
+    OnsetEvent,
+    SongAnalysis,
+    SongOverrides,
+    TaikoChart,
+    TaikoNote,
+    TempoRegion,
+)
 
 
 def _make_byob_like_analysis() -> SongAnalysis:
@@ -56,6 +74,69 @@ def _make_byob_like_analysis() -> SongAnalysis:
     )
 
 
+def _make_repeated_ride_analysis() -> SongAnalysis:
+    beats = []
+    drums = []
+    bar_duration = 1.2
+    for measure_idx in range(8):
+        start = measure_idx * bar_duration
+        for beat_idx in range(4):
+            beat_time = start + beat_idx * 0.3
+            beats.append(BeatEvent(time_sec=beat_time, is_downbeat=beat_idx == 0))
+            drums.append(DrumHit(time_sec=beat_time, drum_class="kick", velocity=0.8))
+        snare_beat = measure_idx if measure_idx < 4 else 2
+        drums.append(
+            DrumHit(time_sec=start + (snare_beat % 4) * 0.3, drum_class="snare", velocity=0.8)
+        )
+        for offbeat in (0.15, 0.45, 0.75, 1.05):
+            drums.append(DrumHit(time_sec=start + offbeat, drum_class="ride", velocity=0.8))
+
+    return SongAnalysis(
+        song_id="repeated_ride",
+        title="Repeated Ride",
+        audio_path="audio.wav",
+        duration_sec=8 * bar_duration,
+        beats=beats,
+        tempo_regions=[
+            TempoRegion(start_sec=0.0, end_sec=8 * bar_duration, bpm=200.0, numerator=4, denominator=4)
+        ],
+        drum_hits=drums,
+    )
+
+
+def _make_sparse_fill_analysis() -> SongAnalysis:
+    beats = []
+    drums = []
+    bar_duration = 1.2
+    for measure_idx in range(13):
+        start = measure_idx * bar_duration
+        for beat_idx in range(4):
+            beat_time = start + beat_idx * 0.3
+            beats.append(BeatEvent(time_sec=beat_time, is_downbeat=beat_idx == 0))
+            drums.append(DrumHit(time_sec=beat_time, drum_class="kick", velocity=0.8))
+        if measure_idx in (0, 4, 8, 12):
+            for hit_idx in range(6):
+                drums.append(
+                    DrumHit(
+                        time_sec=start + 0.15 + hit_idx * 0.075,
+                        drum_class="snare",
+                        velocity=0.8,
+                    )
+                )
+
+    return SongAnalysis(
+        song_id="sparse_fills",
+        title="Sparse Fills",
+        audio_path="audio.wav",
+        duration_sec=13 * bar_duration,
+        beats=beats,
+        tempo_regions=[
+            TempoRegion(start_sec=0.0, end_sec=13 * bar_duration, bpm=200.0, numerator=4, denominator=4)
+        ],
+        drum_hits=drums,
+    )
+
+
 def test_byob_synthetic_meter_and_zero_drift(tmp_path: Path):
     cfg = load_config("punk_gallop")
     analysis = _make_byob_like_analysis()
@@ -90,6 +171,227 @@ def test_byob_synthetic_meter_and_zero_drift(tmp_path: Path):
 
     report = format_chart_report(chart)
     assert "ONI" in report
+
+
+def test_tja_writer_formats_zero_offset_without_negative_sign():
+    chart = TaikoChart(title="Zero Offset", wave_filename="audio.wav", base_bpm=120.0)
+
+    assert "OFFSET:0.000" in render_tja_text(chart)
+
+
+def test_tja_writer_shortens_next_measure_when_playback_is_late():
+    durations = [1.0, *([0.99] * 6)]
+    start = 0.0
+    measures = []
+    for idx, duration in enumerate(durations):
+        measures.append(
+            ChartMeasure(
+                measure_idx=idx,
+                start_sec=start,
+                end_sec=start + duration,
+                bpm=240.0,
+                notes=[0] * 16,
+            )
+        )
+        start += duration
+
+    lines = render_course_tja(
+        ChartDifficulty(difficulty="hard", measures=measures),
+        initial_bpm=240.0,
+        bpm_deadzone=3.0,
+    )
+    active_bpm = 240.0
+    measure_bpms = []
+    for line in lines:
+        if line.startswith("#BPMCHANGE "):
+            active_bpm = float(line.split()[1])
+        elif line.endswith(","):
+            measure_bpms.append(active_bpm)
+
+    assert measure_bpms[:2] == [240.0, 240.0]
+    assert measure_bpms[2] > 240.0
+
+
+def test_tja_writer_carries_drift_across_meter_changes():
+    durations = [1.0, 0.99, 0.70]
+    meters = [(4, 4), (4, 4), (3, 4)]
+    start = 0.0
+    measures = []
+    for idx, (duration, (numerator, denominator)) in enumerate(zip(durations, meters)):
+        measures.append(
+            ChartMeasure(
+                measure_idx=idx,
+                start_sec=start,
+                end_sec=start + duration,
+                bpm=240.0,
+                numerator=numerator,
+                denominator=denominator,
+                notes=[0] * 16,
+            )
+        )
+        start += duration
+
+    lines = render_course_tja(
+        ChartDifficulty(difficulty="hard", measures=measures),
+        initial_bpm=240.0,
+        bpm_deadzone=3.0,
+    )
+    measure_bpms = []
+    active_bpm = 240.0
+    for line in lines:
+        if line.startswith("#BPMCHANGE "):
+            active_bpm = float(line.split()[1])
+        elif line.endswith(","):
+            measure_bpms.append(active_bpm)
+
+    assert measure_bpms[2] == 258.065
+
+
+def test_tja_writer_rejects_excessive_timing_drift():
+    durations = [1.0, *([0.3] * 3)]
+    start = 0.0
+    measures = []
+    for idx, duration in enumerate(durations):
+        measures.append(
+            ChartMeasure(
+                measure_idx=idx,
+                start_sec=start,
+                end_sec=start + duration,
+                bpm=240.0,
+                notes=[0] * 16,
+            )
+        )
+        start += duration
+
+    with pytest.raises(ValueError, match="drifts"):
+        render_course_tja(
+            ChartDifficulty(difficulty="hard", measures=measures),
+            initial_bpm=240.0,
+            bpm_deadzone=10.0,
+        )
+
+
+def test_tja_writer_emits_sub_deadzone_bpm_changes_to_limit_drift():
+    durations = [measure_duration_sec(4, 4, bpm) for bpm in [90.0, *([89.0] * 12)]]
+    start = 0.0
+    measures = []
+    for idx, duration in enumerate(durations):
+        measures.append(
+            ChartMeasure(
+                measure_idx=idx,
+                start_sec=start,
+                end_sec=start + duration,
+                bpm=90.0,
+                notes=[0] * 16,
+            )
+        )
+        start += duration
+
+    lines = render_course_tja(
+        ChartDifficulty(difficulty="hard", measures=measures),
+        initial_bpm=90.0,
+        bpm_deadzone=2.5,
+    )
+
+    bpm_changes = [line for line in lines if line.startswith("#BPMCHANGE ")]
+    assert len(bpm_changes) > 1
+
+
+def test_tja_writer_normalizes_highway_speed_without_changing_timing():
+    durations = [measure_duration_sec(4, 4, bpm) for bpm in (120.0, 240.0)]
+    measures = []
+    start = 0.0
+    for idx, duration in enumerate(durations):
+        measures.append(
+            ChartMeasure(
+                measure_idx=idx,
+                start_sec=start,
+                end_sec=start + duration,
+                bpm=120.0 if idx == 0 else 240.0,
+                notes=[0] * 16,
+            )
+        )
+        start += duration
+
+    course = ChartDifficulty(difficulty="hard", measures=measures)
+    plain_lines = render_course_tja(course, initial_bpm=120.0)
+    normalized_lines = render_course_tja(
+        course,
+        initial_bpm=120.0,
+        normalize_scroll=True,
+        target_highway_speed=101.343,
+    )
+
+    plain_timing = [line for line in plain_lines if line.startswith(("#MEASURE", "#BPMCHANGE"))]
+    normalized_timing = [
+        line for line in normalized_lines if line.startswith(("#MEASURE", "#BPMCHANGE"))
+    ]
+    assert normalized_timing == plain_timing
+
+    bpm = 120.0
+    scroll = 0.5
+    speeds = []
+    for line in normalized_lines:
+        if line.startswith("#BPMCHANGE "):
+            bpm = float(line.split()[1])
+        elif line.startswith("#SCROLL "):
+            scroll = float(line.split()[1])
+        elif line.endswith(","):
+            speeds.append(bpm * scroll)
+
+    assert speeds == pytest.approx([101.343, 101.343], abs=0.1)
+
+
+def test_repeated_phrases_use_varying_midi_ride_accents_only_on_hard_and_oni():
+    cfg = load_config("punk_gallop")
+    chart = arrange_song(_make_repeated_ride_analysis(), cfg)
+    courses = {course.difficulty: course for course in chart.courses}
+    hard = courses["hard"]
+    oni = courses["oni"]
+
+    hard_ride_measures = [
+        measure
+        for measure in hard.measures
+        if TaikoNote.KAT.value in measure.notes
+    ]
+    assert hard_ride_measures
+    assert min(measure.measure_idx for measure in hard_ride_measures) >= 4
+    assert len({tuple(i for i, note in enumerate(m.notes) if note == TaikoNote.KAT) for m in hard_ride_measures}) > 1
+    assert any(TaikoNote.KAT.value in measure.notes for measure in oni.measures[4:])
+    assert len(
+        {
+            tuple(i for i, note in enumerate(m.notes) if note == TaikoNote.KAT)
+            for m in oni.measures[4:]
+        }
+    ) > 1
+    assert all(
+        TaikoNote.DRUMROLL.value not in measure.notes
+        for course in chart.courses
+        for measure in course.measures
+    )
+    assert [m.start_sec for m in hard.measures] == [m.start_sec for m in oni.measures]
+    assert [m.end_sec for m in hard.measures] == [m.end_sec for m in oni.measures]
+
+
+def test_easy_and_normal_get_at_most_three_midi_fill_rolls_and_easy_pauses():
+    cfg = load_config("punk_gallop")
+    chart = arrange_song(_make_sparse_fill_analysis(), cfg)
+    courses = {course.difficulty: course for course in chart.courses}
+    easy_rolls = [m for m in courses["easy"].measures if TaikoNote.DRUMROLL.value in m.notes]
+    normal_rolls = [m for m in courses["normal"].measures if TaikoNote.DRUMROLL.value in m.notes]
+
+    assert len(easy_rolls) == 3
+    assert len(normal_rolls) == 3
+    assert [m.measure_idx for m in normal_rolls] == [0, 8, 12]
+    assert all(
+        sum(note == TaikoNote.DRUMROLL.value for note in m.notes)
+        == sum(note == TaikoNote.END.value for note in m.notes)
+        == 1
+        for m in easy_rolls + normal_rolls
+    )
+    assert any(not any(m.notes) for m in courses["easy"].measures)
+    assert [m.start_sec for m in courses["easy"].measures] == [m.start_sec for m in courses["normal"].measures]
+    assert [m.end_sec for m in courses["easy"].measures] == [m.end_sec for m in courses["normal"].measures]
 
 
 def test_california_uber_alles_normal_follows_vocals_hard_follows_drums():

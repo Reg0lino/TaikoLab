@@ -15,7 +15,8 @@ class GlobalSettings(BaseModel):
     opentaiko_songs_dir: str = ""
     global_audio_offset_ms: float = 0.0
     smooth_bpm_deadzone: float = Field(default=2.5, ge=0.0, le=20.0)
-    normalize_scroll_on_bpm_change: bool = False
+    normalize_scroll_on_bpm_change: bool = True
+    target_highway_speed: float = Field(default=101.343, gt=0.0)
     default_preset: str = "punk_gallop"
 
 

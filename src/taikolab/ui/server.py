@@ -229,6 +229,7 @@ def _build_chart_payload(song_id: str, overrides: SongOverrides | None = None, e
         tja_path,
         bpm_deadzone=cfg.settings.smooth_bpm_deadzone,
         normalize_scroll=cfg.settings.normalize_scroll_on_bpm_change,
+        target_highway_speed=cfg.settings.target_highway_speed,
     )
 
     exported_str = None

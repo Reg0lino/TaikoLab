@@ -1,4 +1,4 @@
-"""Pure-mido MIDI Ingest with SyncToolbox Macro DTW + Isolated Demucs Drum Attack Snap."""
+"""Pure-mido MIDI Ingest with Band-Wide SyncToolbox Chroma+Onset DTW Alignment."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import mido
 import numpy as np
 import soundfile as sf
 
-from taikolab.ingest.stem_loader import discover_song_files, get_audio_duration, separate_stems_demucs
+from taikolab.ingest.stem_loader import discover_song_files, get_audio_duration
 from taikolab.schemas import BeatEvent, DrumClass, DrumHit, OnsetEvent, SongAnalysis, TempoRegion
 
 _GM_DRUM_MAP: dict[int, DrumClass] = {
@@ -147,7 +147,7 @@ def _parse_midi_unified(
         cur_tk = next_tk
 
     channel_programs: dict[int, int] = {}
-    all_notes: list[tuple[float, float, int, int, int, str]] = []
+    all_notes: list[tuple[float, float, int, int, int, str]] = []  # (start_s, end_s, ch, pitch, vel, track_name)
 
     for tr in mid.tracks:
         t_name = (tr.name or "").lower()
@@ -181,7 +181,7 @@ def _parse_midi_unified(
     drums: list[DrumHit] = []
     vocals: list[OnsetEvent] = []
     raw_guitars: list[OnsetEvent] = []
-    synth_guide: list[tuple[float, float, int, bool]] = []
+    synth_guide: list[tuple[float, float, int, bool]] = []  # (start, end, pitch, is_drum)
 
     seen_drum_cls: dict[DrumClass, float] = {}
     last_vocal_t = -1.0
@@ -263,124 +263,14 @@ def _synthesize_midi_guide(
     return y
 
 
-def _extract_waveform_attack_onsets(audio_path: Path) -> tuple[np.ndarray, float]:
-    """Extract 2.9ms-resolution attack-backtracked onsets and first audio transient."""
-    import librosa
-    from scipy.signal import find_peaks
-
-    y, sr = librosa.load(str(audio_path), sr=44100, mono=True)
-    hop = 128
-    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
-    env_n = env / (np.percentile(env, 99.5) + 1e-6)
-    peaks, _ = find_peaks(env_n, height=0.18, prominence=0.12, distance=int(0.045 * sr / hop))
-    bt_frames = librosa.onset.onset_backtrack(peaks, env)
-    attack_onsets = librosa.frames_to_time(bt_frames, sr=sr, hop_length=hop)
-
-    rms = librosa.feature.rms(y=y, frame_length=1024, hop_length=hop)[0]
-    thresh = float(np.max(rms)) * 0.04
-    first_idx = int(np.argmax(rms > thresh)) if np.any(rms > thresh) else 0
-    first_transient = float(librosa.frames_to_time(first_idx, sr=sr, hop_length=hop))
-
-    return attack_onsets.astype(np.float64), first_transient
-
-
-def _snap_hits_to_attacks(drum_hits: list[DrumHit], attack_onsets: np.ndarray) -> np.ndarray:
-    """Shift ADTOF detections backward [-65ms, +15ms] onto crisp 2.9ms drum attacks."""
-    raw = np.array(sorted(h.time_sec for h in drum_hits if h.drum_class in ("kick", "snare")), dtype=np.float64)
-    if len(raw) == 0 or len(attack_onsets) == 0:
-        return raw
-
-    snapped = raw.copy()
-    for i, t in enumerate(raw):
-        idx = int(np.searchsorted(attack_onsets, t))
-        cands = []
-        if idx > 0:
-            cands.append(attack_onsets[idx - 1])
-        if idx < len(attack_onsets):
-            cands.append(attack_onsets[idx])
-        valid = [c for c in cands if -0.065 <= (c - t) <= 0.015]
-        if valid:
-            snapped[i] = min(valid, key=lambda c: abs(c - t))
-    return np.sort(snapped)
-
-
-def _estimate_isolated_drum_warp(
-    m_ks: np.ndarray,
-    r_ks: np.ndarray,
-    duration_sec: float,
-    first_note_t: float = 0.0,
-    first_aud_transient: float = 0.0,
-) -> tuple[np.ndarray, np.ndarray, float]:
-    """Sequential constrained drum-warp (used when DTW isn't run; breaks ties toward small lag)."""
-    if len(m_ks) < 8 or len(r_ks) < 8:
-        return np.array([0.0, duration_sec]), np.array([0.0, duration_sec]), 0.0
-
-    def _best_lag(sub: np.ndarray, grid: np.ndarray, ref_lag: float = 0.0, tol: float = 0.025) -> tuple[float, float]:
-        best_l, best_score = float(grid[0]), -1.0
-        best_hits = 0
-        for lag in grid:
-            sh = sub + lag
-            idx = np.searchsorted(r_ks, sh)
-            d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - sh)
-            d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - sh)
-            hits = int(np.sum(np.minimum(d1, d0) <= tol))
-            # Tiny proximity tie-breaker prevents periodic 4-beat aliasing
-            score = float(hits) - 0.05 * abs(float(lag) - ref_lag)
-            if score > best_score:
-                best_score, best_l, best_hits = score, float(lag), hits
-        return best_l, best_hits / float(max(1, len(sub)))
-
-    first_drum = float(m_ks[0])
-    init_sub = m_ks[(m_ks >= first_drum) & (m_ks < first_drum + 16.0)]
-    if len(init_sub) < 6:
-        init_sub = m_ks[: min(20, len(m_ks))]
-
-    ref0 = max(0.0, first_aud_transient - first_note_t)
-    init_lag, _ = _best_lag(init_sub, np.arange(-2.5, 3.505, 0.004), ref_lag=ref0)
-    anchors: list[tuple[float, float]] = [(max(0.0, first_note_t), init_lag)]
-    cur_lag = init_lag
-
-    t = max(0.0, first_drum)
-    while t < duration_sec - 4.0:
-        sub = m_ks[(m_ks >= t) & (m_ks < t + 10.0)]
-        if len(sub) >= 6:
-            grid = np.arange(cur_lag - 0.20, cur_lag + 0.205, 0.004)
-            w_lag, w_score = _best_lag(sub, grid, ref_lag=cur_lag)
-            if w_score >= 0.65:
-                cur_lag = w_lag
-                anchors.append((float(np.median(sub)), w_lag))
-        t += 6.0
-
-    anchors.append((duration_sec + 2.0, cur_lag))
-
-    raw_xs = np.array([a[0] for a in anchors], dtype=np.float64)
-    raw_ys = np.array([a[1] for a in anchors], dtype=np.float64)
-    knots_m = np.arange(0.0, duration_sec + 2.0, 1.0)
-    raw_lags = np.interp(knots_m, raw_xs, raw_ys)
-
-    smooth_lags = np.convolve(np.pad(raw_lags, (1, 1), mode="edge"), np.ones(3) / 3.0, mode="valid")
-    knots_a = knots_m + smooth_lags
-    for i in range(1, len(knots_a)):
-        dt = float(knots_m[i] - knots_m[i - 1])
-        knots_a[i] = max(knots_a[i], knots_a[i - 1] + 0.75 * dt)
-
-    warped = np.interp(m_ks, knots_m, knots_a)
-    idx = np.searchsorted(r_ks, warped)
-    d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - warped)
-    d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - warped)
-    match_rate = float(np.mean(np.minimum(d1, d0) <= 0.030))
-    return knots_m, knots_a, match_rate
-
-
-def _align_hybrid_dtw_plus_isolated_drums(
-    main_audio: Path,
-    drums_wav: Path,
+def _align_via_synctoolbox(
+    audio_path: Path,
     synth_guide: list[tuple[float, float, int, bool]],
     midi_drums: list[DrumHit],
     real_drums: list[DrumHit],
     duration_sec: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Combine guitar-aware intro lock, SyncToolbox DTW, and 2-bar isolated drum rush tracking."""
+    """Run band-wide SyncToolbox Chroma+DLNCO MrMsDTW, fix (0,0) pin, and refine on drum peaks."""
     import librosa
     from synctoolbox.dtw.mrmsdtw import sync_via_mrmsdtw
     from synctoolbox.dtw.utils import compute_optimal_chroma_shift, shift_chroma_vectors
@@ -390,46 +280,10 @@ def _align_hybrid_dtw_plus_isolated_drums(
     from synctoolbox.feature.pitch_onset import audio_to_pitch_onset_features
     from synctoolbox.feature.utils import estimate_tuning
 
-    drum_attacks, _ = _extract_waveform_attack_onsets(drums_wav)
-    _, first_mix_transient = _extract_waveform_attack_onsets(main_audio)
-    r_ks = _snap_hits_to_attacks(real_drums, drum_attacks)
-    m_ks = np.array(sorted(h.time_sec for h in midi_drums if h.drum_class in ("kick", "snare")), dtype=np.float64)
-
-    # 1. Check Studio Click Lock first (for click-tracked metal like B.Y.O.B.)
-    if len(m_ks) >= 24 and len(r_ks) >= 24:
-        best_g_lag, best_g_hits = 0.0, -1
-        for lag in np.arange(-2.0, 3.005, 0.004):
-            sh = m_ks + lag
-            idx = np.searchsorted(r_ks, sh)
-            d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - sh)
-            d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - sh)
-            c = int(np.sum(np.minimum(d1, d0) <= 0.035))
-            if c > best_g_hits:
-                best_g_hits, best_g_lag = c, float(lag)
-
-        g_rate = best_g_hits / float(len(m_ks))
-        if g_rate >= 0.72:
-            third = max(10.0, duration_sec / 3.0)
-            slice_rates = []
-            for s0 in (0.0, third, 2.0 * third):
-                sub = m_ks[(m_ks >= s0) & (m_ks < s0 + third)]
-                if len(sub) >= 8:
-                    sh = sub + best_g_lag
-                    idx = np.searchsorted(r_ks, sh)
-                    d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - sh)
-                    d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - sh)
-                    slice_rates.append(float(np.mean(np.minimum(d1, d0) <= 0.035)))
-            if slice_rates and min(slice_rates) >= 0.65:
-                print(f"[TaikoLab TabSync] Studio Click Lock detected (lag={best_g_lag:+.3f}s, match={g_rate*100:.1f}%) -> Skipping DTW warp!")
-                knots_m = np.array([0.0, duration_sec + 2.0], dtype=np.float64)
-                knots_a = knots_m + best_g_lag
-                return knots_m, knots_a
-
-    # 2. Run SyncToolbox DTW for robust macro path
     Fs = 22050
     feature_rate = 50
 
-    y_aud, _ = librosa.load(str(main_audio), sr=Fs, mono=True)
+    y_aud, _ = librosa.load(str(audio_path), sr=Fs, mono=True)
     y_mid = _synthesize_midi_guide(synth_guide, duration_sec, fs=Fs)
 
     def _feats(y: np.ndarray):
@@ -446,7 +300,7 @@ def _align_hybrid_dtw_plus_isolated_drums(
         )
         return f_chroma, f_cens, f_dlnco
 
-    print("[TaikoLab TabSync] Running SyncToolbox Macro DTW + 2-Bar Isolated Drum Rush Tracking...")
+    print("[TaikoLab TabSync] Running SyncToolbox Chroma+Onset DTW alignment...")
     ch1, cens1, dl1 = _feats(y_mid)
     ch2, cens2, dl2 = _feats(y_aud)
     shift = compute_optimal_chroma_shift(cens1, cens2)
@@ -465,237 +319,60 @@ def _align_hybrid_dtw_plus_isolated_drums(
     t_mid_wp = wp[0].astype(np.float64) / float(feature_rate)
     t_aud_wp = wp[1].astype(np.float64) / float(feature_rate)
 
-    first_note_t = min((n[0] for n in synth_guide), default=0.0)
-    first_drum_t = float(m_ks[0]) if len(m_ks) > 0 else first_note_t
-    last_note_t = max((n[0] for n in synth_guide), default=duration_sec)
-
-    # 3. Dual-Stage Intro Lock:
-    # Guitar intro (t < first_drum_t) locks directly to opening guitar transient
-    guitar_intro_lag = max(0.0, first_mix_transient - first_note_t)
-    drum_intro_lag = guitar_intro_lag
-
-    if len(m_ks) >= 6 and len(r_ks) >= 6:
-        early_m = m_ks[m_ks < min(first_drum_t + 16.0, m_ks[0] + 16.0)]
-        if len(early_m) >= 6:
-            best_l, best_c = guitar_intro_lag, -1
-            for lag in np.arange(guitar_intro_lag - 0.15, guitar_intro_lag + 0.155, 0.003):
-                sh = early_m + lag
-                idx = np.searchsorted(r_ks, sh)
-                d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - sh)
-                d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - sh)
-                c = int(np.sum(np.minimum(d1, d0) <= 0.024))
-                if c > best_c:
-                    best_c, best_l = c, float(lag)
-            if best_c / float(len(early_m)) >= 0.65:
-                drum_intro_lag = best_l
-
-    print(f"[TaikoLab TabSync] Intro lock -> Guitar={guitar_intro_lag:+.3f}s, Drums={drum_intro_lag:+.3f}s")
-
-    # Build 0.5s fine knot grid (prevents wide 5s smoothing from blurring over 2-bar drummer rushes!)
-    knots_m = np.arange(0.0, last_note_t + 2.0, 0.5)
-    raw_dtw_a = np.interp(knots_m, t_mid_wp, t_aud_wp)
-    knots_a = np.zeros_like(knots_m)
-
-    for i, tm in enumerate(knots_m):
-        if tm <= first_note_t + 0.5:
-            knots_a[i] = tm + guitar_intro_lag
-        elif tm <= first_drum_t + 1.0:
-            # Smoothly transition from guitar intro lag to drum intro lag
-            alpha = (tm - first_note_t) / max(0.5, first_drum_t + 1.0 - first_note_t)
-            knots_a[i] = tm + (1.0 - alpha) * guitar_intro_lag + alpha * drum_intro_lag
-        else:
-            cand_a = float(raw_dtw_a[i])
-            if i > 0:
-                dt = float(knots_m[i] - knots_m[i - 1])
-                cand_a = max(cand_a, knots_a[i - 1] + 0.75 * dt)
-            knots_a[i] = cand_a
-
-    # 4. Fast 2-Bar (2.4s window) Drum-Rush Tracking against isolated drum attacks
-    if len(m_ks) >= 10 and len(r_ks) >= 10:
-        nudge_grid = np.arange(-0.160, 0.161, 0.003)
-        snap_knots_t: list[float] = [0.0, first_drum_t]
-        snap_knots_lag: list[float] = [guitar_intro_lag, drum_intro_lag]
-
-        # Step in fast 2-bar increments (2.4s at ~200 BPM)
-        for win_start in np.arange(first_drum_t + 0.5, last_note_t - 2.0, 2.4):
-            mask_m = (m_ks >= win_start) & (m_ks < win_start + 4.8)
-            if int(np.sum(mask_m)) < 5:
-                continue
-            base_warped = np.interp(m_ks[mask_m], knots_m, knots_a)
-            best_n, best_score = 0.0, -1.0
-            best_hits = 0
-            for ng in nudge_grid:
-                sh = base_warped + ng
-                idx = np.searchsorted(r_ks, sh)
-                d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - sh)
-                d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - sh)
-                hits = int(np.sum(np.minimum(d1, d0) <= 0.024))
-                score = float(hits) - 0.08 * abs(float(ng))
-                if score > best_score:
-                    best_score, best_n, best_hits = score, float(ng), hits
-
-            conf = best_hits / float(np.sum(mask_m))
-            if conf >= 0.58:
-                mid_t = float(win_start + 2.4)
-                base_lag = float(np.interp(mid_t, knots_m, knots_a) - mid_t)
-                snap_knots_t.append(mid_t)
-                snap_knots_lag.append(base_lag + best_n)
-
-        if len(snap_knots_t) >= 4:
-            snap_knots_t.append(knots_m[-1])
-            snap_knots_lag.append(snap_knots_lag[-1])
-            interp_lags = np.interp(knots_m, snap_knots_t, snap_knots_lag)
-            # Tight 3-point smoothing (retains 2-bar rushes while stopping single-note jitter)
-            smooth_lags = np.convolve(np.pad(interp_lags, (1, 1), mode="edge"), np.ones(3) / 3.0, mode="valid")
-            for i, tm in enumerate(knots_m):
-                if tm <= first_note_t + 0.5:
-                    smooth_lags[i] = guitar_intro_lag
-            knots_a = knots_m + smooth_lags
-            for i in range(1, len(knots_a)):
-                dt = float(knots_m[i] - knots_m[i - 1])
-                knots_a[i] = max(knots_a[i], knots_a[i - 1] + 0.75 * dt)
-
-        final_warped = np.interp(m_ks, knots_m, knots_a)
-        idx = np.searchsorted(r_ks, final_warped)
-        d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - final_warped)
-        d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - final_warped)
-        match_pct = 100.0 * float(np.mean(np.minimum(d1, d0) <= 0.025))
-        signed = [
-            r_ks[int(np.argmin(np.abs(r_ks - t)))] - t
-            for t in final_warped
-            if abs(r_ks[int(np.argmin(np.abs(r_ks - t)))] - t) <= 0.050
-        ]
-        med_err_ms = float(np.median(signed)) * 1000.0 if signed else 0.0
-        print(f"[TaikoLab TabSync] Fast 2-Bar Drum Rush Lock: {match_pct:.1f}% within +/-25ms (median={med_err_ms:+.1f}ms)")
-
-    return knots_m, knots_a
-
-    print("[TaikoLab TabSync] Running SyncToolbox Macro DTW + Isolated Drum Refinement...")
-    ch1, cens1, dl1 = _feats(y_mid)
-    ch2, cens2, dl2 = _feats(y_aud)
-    shift = compute_optimal_chroma_shift(cens1, cens2)
-    ch1 = shift_chroma_vectors(ch1, shift)
-    dl1 = shift_chroma_vectors(dl1, shift)
-
-    wp = sync_via_mrmsdtw(
-        f_chroma1=ch1,
-        f_chroma2=ch2,
-        f_onset1=dl1,
-        f_onset2=dl2,
-        input_feature_rate=feature_rate,
-        step_weights=np.array([1.5, 1.5, 2.0]),
-        threshold_rec=10**6,
-    )
-    t_mid_wp = wp[0].astype(np.float64) / float(feature_rate)
-    t_aud_wp = wp[1].astype(np.float64) / float(feature_rate)
-
-
-
+    # Sample warp at 1.0s control knots and fix the artificial (0,0) DTW pin at intro/outro
     first_note_t = min((n[0] for n in synth_guide), default=0.0)
     last_note_t = max((n[0] for n in synth_guide), default=duration_sec)
-
-    # Lock Beat 1 cleanly from first audio transient + earliest isolated drums
-    intro_lag = first_mix_transient - first_note_t
-    if len(m_ks) >= 6 and len(r_ks) >= 6:
-        early_m = m_ks[m_ks < min(20.0, m_ks[0] + 15.0)]
-        if len(early_m) >= 6:
-            best_l, best_c = intro_lag, -1
-            for lag in np.arange(intro_lag - 0.15, intro_lag + 0.155, 0.003):
-                sh = early_m + lag
-                idx = np.searchsorted(r_ks, sh)
-                d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - sh)
-                d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - sh)
-                c = int(np.sum(np.minimum(d1, d0) <= 0.024))
-                if c > best_c:
-                    best_c, best_l = c, float(lag)
-            if best_c / float(len(early_m)) >= 0.70:
-                intro_lag = best_l
-
-    print(f"[TaikoLab TabSync] Locked Beat-1 intro lag: {intro_lag:+.3f}s (first transient={first_mix_transient:.3f}s)")
-
-    # Construct slope-protected DTW knot grid (fixes sparse intro freeze)
-    first_drum_t = float(m_ks[0]) if len(m_ks) > 0 else first_note_t
-    hold_until_t = min(last_note_t, max(first_note_t + 8.0, first_drum_t + 6.0))
-    anchor_out_t = max(hold_until_t + 1.0, last_note_t - 2.0)
+    anchor_in_t = min(last_note_t, first_note_t + 2.5)
+    anchor_out_t = max(anchor_in_t + 1.0, last_note_t - 2.0)
 
     knots_m = np.arange(0.0, last_note_t + 2.0, 1.0)
-    raw_dtw_a = np.interp(knots_m, t_mid_wp, t_aud_wp)
-    knots_a = np.zeros_like(knots_m)
+    knots_a = np.interp(knots_m, t_mid_wp, t_aud_wp)
 
-    last_good_lag = intro_lag
+    lag_in = float(np.interp(anchor_in_t, t_mid_wp, t_aud_wp) - anchor_in_t)
+    lag_out = float(np.interp(anchor_out_t, t_mid_wp, t_aud_wp) - anchor_out_t)
     for i, tm in enumerate(knots_m):
-        if tm <= hold_until_t:
-            knots_a[i] = tm + intro_lag
-            last_good_lag = intro_lag
+        if tm < anchor_in_t:
+            knots_a[i] = tm + lag_in
         elif tm > anchor_out_t:
-            knots_a[i] = max(knots_a[i - 1] + 0.75, tm + last_good_lag)
-        else:
-            cand_a = float(raw_dtw_a[i])
-            cand_lag = cand_a - float(tm)
-            if abs(cand_lag - last_good_lag) > 0.35:
-                cand_a = float(tm) + last_good_lag
-            else:
-                last_good_lag = cand_lag
-            if i > 0:
-                dt = float(knots_m[i] - knots_m[i - 1])
-                cand_a = max(cand_a, knots_a[i - 1] + 0.75 * dt)
-            knots_a[i] = cand_a
+            knots_a[i] = tm + lag_out
 
-    # High-confidence (+/- 140ms) snap onto ISOLATED Demucs drum attacks per 4s window
+    # Gentle +/- 40ms fine-snap on ADTOF drum transients per 6s window, keeping monotonic smoothness
+    m_ks = np.array(sorted(h.time_sec for h in midi_drums if h.drum_class in ("kick", "snare")), dtype=np.float64)
+    r_ks = np.array(sorted(h.time_sec for h in real_drums if h.drum_class in ("kick", "snare")), dtype=np.float64)
+
     if len(m_ks) >= 10 and len(r_ks) >= 10:
-        nudge_grid = np.arange(-0.140, 0.141, 0.004)
-        snap_knots_t: list[float] = [0.0]
-        snap_knots_lag: list[float] = [intro_lag]
-
-        for win_start in np.arange(first_drum_t, last_note_t - 2.0, 4.0):
-            mask_m = (m_ks >= win_start) & (m_ks < win_start + 7.0)
+        nudge_grid = np.arange(-0.045, 0.046, 0.005)
+        refined_a = knots_a.copy()
+        for win_start in np.arange(first_note_t, last_note_t, 6.0):
+            mask_m = (m_ks >= win_start) & (m_ks < win_start + 8.0)
             if int(np.sum(mask_m)) < 6:
                 continue
             base_warped = np.interp(m_ks[mask_m], knots_m, knots_a)
-            best_n, best_score = 0.0, -1.0
-            best_hits = 0
+            best_n, best_c = 0.0, -1
             for ng in nudge_grid:
                 sh = base_warped + ng
                 idx = np.searchsorted(r_ks, sh)
                 d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - sh)
                 d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - sh)
-                hits = int(np.sum(np.minimum(d1, d0) <= 0.022))
-                score = float(hits) - 0.15 * abs(float(ng))
-                if score > best_score:
-                    best_score, best_n, best_hits = score, float(ng), hits
+                c = int(np.sum(np.minimum(d1, d0) <= 0.025))
+                if c > best_c:
+                    best_c, best_n = c, float(ng)
+            if best_c / float(np.sum(mask_m)) >= 0.60:
+                k_mask = (knots_m >= win_start) & (knots_m < win_start + 6.0)
+                refined_a[k_mask] += best_n
 
-            conf = best_hits / float(np.sum(mask_m))
-            if conf >= 0.65:
-                mid_t = float(win_start + 3.0)
-                base_lag = float(np.interp(mid_t, knots_m, knots_a) - mid_t)
-                snap_knots_t.append(mid_t)
-                snap_knots_lag.append(base_lag + best_n)
-
-        if len(snap_knots_t) >= 3:
-            snap_knots_t.append(knots_m[-1])
-            snap_knots_lag.append(snap_knots_lag[-1])
-            interp_lags = np.interp(knots_m, snap_knots_t, snap_knots_lag)
-            smooth_lags = np.convolve(np.pad(interp_lags, (2, 2), mode="edge"), np.ones(5) / 5.0, mode="valid")
-            for i, tm in enumerate(knots_m):
-                if tm <= first_note_t + 2.0:
-                    smooth_lags[i] = intro_lag
-            knots_a = knots_m + smooth_lags
-            for i in range(1, len(knots_a)):
-                dt = float(knots_m[i] - knots_m[i - 1])
-                knots_a[i] = max(knots_a[i], knots_a[i - 1] + 0.75 * dt)
+        # 5-point moving average on lags so bar tempos never jitter wildly
+        lags = refined_a - knots_m
+        kernel = np.ones(5) / 5.0
+        smooth_lags = np.convolve(np.pad(lags, (2, 2), mode="edge"), kernel, mode="valid")
+        knots_a = np.maximum.accumulate(knots_m + smooth_lags)
 
         final_warped = np.interp(m_ks, knots_m, knots_a)
         idx = np.searchsorted(r_ks, final_warped)
         d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - final_warped)
         d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - final_warped)
-        match_pct = 100.0 * float(np.mean(np.minimum(d1, d0) <= 0.030))
-        signed = [
-            r_ks[int(np.argmin(np.abs(r_ks - t)))] - t
-            for t in final_warped
-            if abs(r_ks[int(np.argmin(np.abs(r_ks - t)))] - t) <= 0.060
-        ]
-        med_err_ms = float(np.median(signed)) * 1000.0 if signed else 0.0
-        print(f"[TaikoLab TabSync] Hybrid DTW + Isolated Drum Lock: {match_pct:.1f}% within +/-30ms (signed bias={med_err_ms:+.1f}ms)")
+        match_pct = 100.0 * float(np.mean(np.minimum(d1, d0) <= 0.035))
+        print(f"[TaikoLab TabSync] DTW + Drum Snap locked {match_pct:.1f}% of all Kick/Snare hits within +/-35ms!")
 
     return knots_m, knots_a
 
@@ -731,7 +408,7 @@ def import_midi_aligned(
     manual_offset_sec: float | None = None,
     device: str = "cuda",
 ) -> SongAnalysis:
-    """Parse a MIDI tab and lock it to real audio via SyncToolbox DTW + HTDemucs Isolated Drums."""
+    """Parse a MIDI tab and align it to real audio via SyncToolbox Chroma+Onset DTW."""
     if not midi_path.exists():
         raise FileNotFoundError(f"MIDI file not found: {midi_path}")
 
@@ -739,12 +416,9 @@ def import_midi_aligned(
     main_audio = _ensure_clean_simulator_audio(song_dir, raw_main_audio)
     duration = get_audio_duration(main_audio)
 
-    if not stems.drums:
-        stems = separate_stems_demucs(song_dir, main_audio, device=device)
-
     bars, drums, vocals, guitars, synth_guide = _parse_midi_unified(midi_path)
     print(
-        f"[TaikoLab TabSync] Parsed MIDI: {len(bars)} bars | "
+        f"[TaikoLab TabSync] Parsed MIDI (pure mido): {len(bars)} bars | "
         f"{len(drums)} drums | {len(vocals)} vocals | {len(guitars)} guitar strokes"
     )
 
@@ -753,22 +427,16 @@ def import_midi_aligned(
         knots_a = knots_m + manual_offset_sec
         print(f"[TaikoLab TabSync] Manual offset override: {manual_offset_sec:+.3f}s")
     else:
-        from taikolab.ingest.drum_transcriber import transcribe_drums_hybrid
+        if stems.drums:
+            from taikolab.ingest.drum_dsp import extract_dsp_drum_hits
 
-        drums_wav = Path(stems.drums) if stems.drums else main_audio
-        real_drums = transcribe_drums_hybrid(
-            drums_wav,
-            has_isolated_drums=bool(stems.drums),
-            device=device,
-        )
-        knots_m, knots_a = _align_hybrid_dtw_plus_isolated_drums(
-            main_audio=main_audio,
-            drums_wav=drums_wav,
-            synth_guide=synth_guide,
-            midi_drums=drums,
-            real_drums=real_drums,
-            duration_sec=duration,
-        )
+            real_drums = extract_dsp_drum_hits(Path(stems.drums))
+        else:
+            from taikolab.ingest.drum_transcriber import run_adtof_transcription
+
+            real_drums = run_adtof_transcription(main_audio, device=device)
+
+        knots_m, knots_a = _align_via_synctoolbox(main_audio, synth_guide, drums, real_drums, duration)
 
     def warp(t: float) -> float:
         return float(np.interp(t, knots_m, knots_a))
@@ -842,5 +510,5 @@ def import_midi_aligned(
 
     out_json = song_dir / "analysis.json"
     out_json.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
-    print(f"[TaikoLab TabSync] Saved DTW+Demucs analysis -> {out_json} ({len(warped_bars)} measures, {len(regions)} regions)")
+    print(f"[TaikoLab TabSync] Saved DTW-aligned analysis -> {out_json} ({len(warped_bars)} measures, {len(regions)} regions)")
     return analysis
