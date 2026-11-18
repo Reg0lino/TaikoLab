@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TaikoLab — Director's Console</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="/static/vendor/wavesurfer.min.js"></script>
+  <script src="/static/vendor/regions.min.js"></script>
+  <script src="/static/vendor/timeline.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot-don"></span><span class="dot-kat"></span>
+      <h1>TaikoLab</h1>
+      <span class="sub">Director's Console</span>
+    </div>
+    <div class="top-controls">
+      <label>Song
+        <select id="songSelect"></select>
+      </label>
+      <label>Stem Audio
+        <select id="stemSelect">
+          <option value="mix">Full Mix</option>
+        </select>
+      </label>
+      <label>Preset
+        <select id="presetSelect">
+          <option value="punk_gallop">punk_gallop</option>
+          <option value="mathcore">mathcore</option>
+          <option value="powerviolence">powerviolence</option>
+        </select>
+      </label>
+      <label>Course
+        <select id="diffSelect">
+          <option value="easy">Easy</option>
+          <option value="normal">Normal</option>
+          <option value="hard" selected>Hard</option>
+          <option value="oni">Oni</option>
+        </select>
+      </label>
+      <button id="btnExport" class="btn-primary">Export to YataiDON</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Transport, Volume Mixers & Global Offset -->
+    <section class="card transport-bar">
+      <div class="transport-left">
+        <button id="btnPlay" class="btn-accent">Play (Space)</button>
+        <button id="btnLoopSec">Loop Section</button>
+        <span id="timeReadout" class="mono">0:00.00 / 0:00.00</span>
+        <label class="inline-check"><input type="checkbox" id="chkHitsounds" checked /> Hitsounds</label>
+        <label class="mixer-lbl">Music <input type="range" id="musicVol" min="0" max="1" step="0.05" value="0.55" /> <span id="lblMusicVol">55%</span></label>
+        <label class="mixer-lbl">Hits <input type="range" id="hitVol" min="0" max="2" step="0.05" value="1.35" /> <span id="lblHitVol">135%</span></label>
+        <label>Speed
+          <select id="speedSelect">
+            <option value="0.5">0.50x</option>
+            <option value="0.75">0.75x</option>
+            <option value="1" selected>1.00x</option>
+          </select>
+        </label>
+      </div>
+      <div class="transport-right">
+        <span class="label-sm">Global Offset:</span>
+        <button class="nudge-global" data-ms="-25">-25ms</button>
+        <button class="nudge-global" data-ms="-5">-5ms</button>
+        <input type="number" id="globalOffsetInput" step="1" value="0" style="width:68px" />
+        <span class="label-sm">ms</span>
+        <button class="nudge-global" data-ms="5">+5ms</button>
+        <button class="nudge-global" data-ms="25">+25ms</button>
+        <button id="btnSplitHere" class="btn-warn">Split Section at Playhead</button>
+      </div>
+    </section>
+
+    <!-- Numpad 0 Tap-Tempo & Downbeat Studio Bar -->
+    <section class="card tap-bar">
+      <div class="tap-left">
+        <button id="btnArmTap" class="btn-rec">Record Downbeats [Numpad 0]</button>
+        <label class="inline-check" title="Replace only bars inside your new tap window instead of wiping the whole song">
+          <input type="checkbox" id="chkPunchIn" checked /> Punch-In Overdub
+        </label>
+        <span id="tapStatus" class="mono badge">Taps: 0 (Auto Grid)</span>
+        <span id="tapFlash" class="tap-flash">TAP!</span>
+      </div>
+      <div class="tap-right">
+        <label class="mixer-lbl">Tap Offset
+          <input type="number" id="tapLatencyInput" value="-20" step="5" style="width:62px" />
+          <span class="label-sm">ms</span>
+        </label>
+        <button id="btnSeedTaps" title="Populate tapped markers from current chart barlines so you only fix bad spots">Seed from Current Bars</button>
+        <button id="btnSnapTaps" class="btn-warn" title="Snap human taps (+/-45ms) onto exact waveform kick/snare/guitar attacks">Magnet-Snap (&plusmn;45ms)</button>
+        <button id="btnStraightenTaps" title="Flatten small human jitter inside steady sections into clean constant BPM">Straighten Steady BPM</button>
+        <button id="btnFillGaps" title="Split any 2x bar gap where you skipped one tap">Fill 2x Gaps</button>
+        <label class="mixer-lbl">Bar Meter
+          <select id="barMeterSelect" title="Change Time Signature of the bar currently at the playhead">
+            <option value="">-- Bar --</option>
+            <option value="4/4">4/4</option>
+            <option value="6/8">6/8</option>
+            <option value="3/4">3/4</option>
+            <option value="2/4">2/4</option>
+            <option value="5/8">5/8</option>
+            <option value="7/8">7/8</option>
+          </select>
+        </label>
+        <button id="btnClearTaps" class="btn-danger">Clear Taps</button>
+      </div>
+    </section>
+
+    <!-- Live Real-Time Taiko Playfield Canvas -->
+    <section class="card lane-card">
+      <div class="lane-header">
+        <div>
+          <strong>Real-Time Taiko Lane</strong>
+          <span class="hint">Click note = cycle (Don &rarr; Kat &rarr; Big Don &rarr; Big Kat &rarr; Delete) &bull; Click empty grid tick = add Don &bull; Right-click = delete</span>
+        </div>
+        <div class="lane-tools">
+          <label>Zoom <input type="range" id="laneZoom" min="180" max="620" value="340" /></label>
+          <button id="btnResetEdits">Reset Note Edits</button>
+        </div>
+      </div>
+      <canvas id="taikoCanvas" width="1200" height="145"></canvas>
+      <div id="diagBar" class="diag-bar mono"></div>
+    </section>
+
+    <!-- WaveSurfer Waveform + Regions + Downbeat Markers -->
+    <section class="card wave-card">
+      <div id="waveform"></div>
+      <div id="waveTimeline"></div>
+      <div class="hint" style="margin:6px 0 0 0">Gold lines = Downbeat Barlines (drag to adjust, double-click gold line to delete) &bull; Colored zones = Song Sections</div>
+    </section>
+
+    <!-- Bottom Grid: Section List + Selected Section Inspector -->
+    <section class="bottom-grid">
+      <div class="card">
+        <div class="section-list-header">
+          <strong>Song Sections</strong>
+          <span class="hint">Click a section to jump &amp; edit</span>
+        </div>
+        <div id="sectionList" class="section-list"></div>
+      </div>
+
+      <div class="card" id="inspectorCard">
+        <div class="inspector-header">
+          <strong>Section Inspector</strong>
+          <span id="secRangeBadge" class="mono badge"></span>
+        </div>
+        <div id="inspectorBody" class="inspector-grid">
+          <label>Label
+            <input type="text" id="secLabel" />
+          </label>
+          <label>Follow Mode
+            <select id="secFollow">
+              <option value="auto">Auto (Smart)</option>
+              <option value="drums">Drums (Kick=Don / Snare=Kat)</option>
+              <option value="vocals">Vocals (Cadence)</option>
+              <option value="guitar">Guitar / Riff</option>
+              <option value="hybrid">Hybrid (Drums + Guitar)</option>
+              <option value="chaos_roll">Chaos Drumroll</option>
+            </select>
+          </label>
+          <label>Section Timing Shift (ms)
+            <div class="row-inline">
+              <button class="nudge-sec" data-ms="-20">-20</button>
+              <button class="nudge-sec" data-ms="-5">-5</button>
+              <input type="number" id="secShiftMs" step="5" value="0" />
+              <button class="nudge-sec" data-ms="5">+5</button>
+              <button class="nudge-sec" data-ms="20">+20</button>
+            </div>
+          </label>
+          <label>BPM Multiplier
+            <select id="secBpmMult">
+              <option value="0.5">0.5x (Half Speed)</option>
+              <option value="1" selected>1.0x (Original)</option>
+              <option value="2">2.0x (Double Speed)</option>
+            </select>
+          </label>
+          <label>Time Signature Override
+            <select id="secMeter">
+              <option value="auto">Keep Auto / Score</option>
+              <option value="4/4">4/4</option>
+              <option value="6/8">6/8</option>
+              <option value="3/4">3/4</option>
+              <option value="2/4">2/4</option>
+              <option value="5/8">5/8</option>
+              <option value="7/8">7/8</option>
+            </select>
+          </label>
+          <label>Drum Sensitivity (<span id="lblDrumSens">1.0</span>x)
+            <input type="range" id="secDrumSens" min="0.3" max="2.0" step="0.05" value="1.0" />
+          </label>
+          <label>Vocal Sensitivity (<span id="lblVocalSens">1.0</span>x)
+            <input type="range" id="secVocalSens" min="0.3" max="2.0" step="0.05" value="1.0" />
+          </label>
+          <label>Max NPS Override (blank = default)
+            <input type="number" id="secMaxNps" min="1" max="20" step="0.5" placeholder="Auto" />
+          </label>
+          <div class="checks-row">
+            <label class="inline-check"><input type="checkbox" id="secBigNotes" checked /> Big Notes</label>
+            <label class="inline-check"><input type="checkbox" id="secFoldRolls" checked /> Fold Blasts to Rolls</label>
+          </div>
+          <div class="inspector-actions">
+            <button id="btnApplySection" class="btn-accent">Rebuild Section</button>
+            <button id="btnDeleteSection" class="btn-danger">Merge With Previous</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

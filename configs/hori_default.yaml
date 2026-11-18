@@ -1,0 +1,18 @@
+# Hori USB Taiko Drum Ergonomics Profile
+# Distinct physical density & minimum hit spacing per difficulty
+
+max_nps_easy: 2.2
+max_nps_normal: 3.8
+max_nps_hard: 6.8
+max_nps_oni: 11.5
+
+# Minimum milliseconds between hits per difficulty (prevents Easy/Normal from feeling like Hard!)
+min_gap_ms_easy: 240.0
+min_gap_ms_normal: 135.0
+min_gap_ms_hard: 80.0
+min_gap_ms_oni: 55.0
+
+blast_bpm_threshold: 215.0
+min_roll_duration_sec: 0.35
+min_note_gap_ms: 55.0
+prefer_stick_alternation: true

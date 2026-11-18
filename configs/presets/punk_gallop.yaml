@@ -1,0 +1,24 @@
+name: "punk_gallop"
+description: "Classic Punk, Skate Punk & Hardcore (Kick=Don, Snare=Kat, Gallop Pocket)"
+
+normal_follow_mode: "vocals"
+hard_follow_mode: "drums"
+oni_follow_mode: "hybrid"
+
+fold_blasts_to_rolls: true
+enable_big_notes: true
+big_note_threshold: 0.88
+
+# Ignore hi-hat and ride cymbal time-keeping chatter to keep the kick-snare groove uncluttered
+hihat_min_velocity: 0.90
+vocal_min_strength: 0.36
+guitar_min_strength: 0.58
+
+drum_mapping:
+  kick: "don"
+  tom: "don"
+  snare: "kat"
+  crash: "kat"
+  ride: "ignore"
+  hihat: "ignore"
+  unknown: "don"

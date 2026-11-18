@@ -1,0 +1,17 @@
+# Global TaikoLab Configuration
+workspace_dir: "workspace"
+
+# Optional: Paste your OpenTaiko Songs folder path here once installed, e.g.:
+# opentaiko_songs_dir: "C:\\Games\\OpenTaiko\\Songs\\TaikoLab"
+opentaiko_songs_dir: "C:/!CODE/YataiDON-Windows/Songs"
+
+# Positive moves notes later; negative moves notes earlier (adjust after Hori calibration)
+global_audio_offset_ms: 0.0
+
+# Ignore tiny BPM wobbles smaller than this to prevent OpenTaiko scroll jitter
+smooth_bpm_deadzone: 2.5
+
+# If true, adjusts #SCROLL inversely on BPM changes to keep visual note speed steady
+normalize_scroll_on_bpm_change: false
+
+default_preset: "punk_gallop"

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taikolab"
+version = "0.1.0"
+description = "Automatic & editable Punk/Hardcore/Metal to OpenTaiko (.tja) chart generator"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "pydantic>=2.7,<3.0",
+    "pyyaml>=6.0,<7.0",
+    "numpy>=1.26,<3.0",
+]
+
+[project.optional-dependencies]
+audio = [
+    "librosa>=0.10.2",
+    "soundfile>=0.12.1",
+    "scipy>=1.11",
+]
+ml = [
+    "beat-this",
+    "adtof-pytorch",
+]
+ui = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+tab = [
+    "ApolloTab",
+    "pretty_midi",
+    "synctoolbox",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+taikolab = "taikolab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]

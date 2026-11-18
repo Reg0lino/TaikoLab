@@ -1,0 +1,23 @@
+name: "powerviolence"
+description: "Powerviolence & Grindcore (Aggressive blast-to-drumroll folding & crash slams)"
+
+normal_follow_mode: "drums"
+hard_follow_mode: "drums"
+oni_follow_mode: "drums"
+
+fold_blasts_to_rolls: true
+enable_big_notes: true
+big_note_threshold: 0.70
+
+hihat_min_velocity: 0.85
+vocal_min_strength: 0.50
+guitar_min_strength: 0.60
+
+drum_mapping:
+  kick: "don"
+  tom: "don"
+  snare: "kat"
+  crash: "big_kat"
+  ride: "kat"
+  hihat: "ignore"
+  unknown: "don"
