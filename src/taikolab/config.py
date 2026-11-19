@@ -17,6 +17,7 @@ class GlobalSettings(BaseModel):
     smooth_bpm_deadzone: float = Field(default=2.5, ge=0.0, le=20.0)
     normalize_scroll_on_bpm_change: bool = True
     target_highway_speed: float = Field(default=101.343, gt=0.0)
+    quiet_guitar_rms_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
     default_preset: str = "punk_gallop"
 
 

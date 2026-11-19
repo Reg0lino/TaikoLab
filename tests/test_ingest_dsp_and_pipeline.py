@@ -5,7 +5,12 @@ import soundfile as sf
 
 from taikolab.ingest.drum_dsp import extract_dsp_drum_hits
 from taikolab.ingest.stem_loader import discover_song_files
-from taikolab.ingest.vocal_riff_tracker import extract_guitar_events, extract_vocal_events
+from taikolab.ingest.vocal_riff_tracker import (
+    ensure_energy_curve,
+    extract_guitar_events,
+    extract_vocal_events,
+)
+from taikolab.schemas import EnergyPoint, SongAnalysis, StemPaths
 
 
 def _write_test_wav(path: Path, samples: np.ndarray, sr: int = 44100) -> None:
@@ -90,6 +95,33 @@ def test_vocal_and_guitar_onset_extractors(tmp_path: Path):
     g_events = extract_guitar_events(g_path)
     assert len(v_events) >= 2
     assert len(g_events) >= 2
+
+
+def test_ensure_energy_curve_populates_and_caches_existing_stems(tmp_path: Path, monkeypatch):
+    instruments = tmp_path / "instruments.wav"
+    instruments.touch()
+    analysis = SongAnalysis(
+        song_id="energy_cache",
+        title="Energy Cache",
+        audio_path="audio.wav",
+        duration_sec=2.0,
+        stems=StemPaths(instruments=str(instruments)),
+    )
+    calls = []
+
+    def fake_compute_energy_curve(stems: StemPaths, duration_sec: float) -> list[EnergyPoint]:
+        calls.append((stems, duration_sec))
+        return [EnergyPoint(time_sec=0.0, guitar_rms=0.2)]
+
+    monkeypatch.setattr(
+        "taikolab.ingest.vocal_riff_tracker.compute_energy_curve",
+        fake_compute_energy_curve,
+    )
+
+    assert ensure_energy_curve(analysis)
+    assert analysis.energy_curve[0].guitar_rms == 0.2
+    assert not ensure_energy_curve(analysis)
+    assert len(calls) == 1
 
 
 def test_ml_adapters_import_without_breaking_torch():

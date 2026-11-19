@@ -9,7 +9,7 @@ import numpy as np
 from scipy.signal import find_peaks
 
 from taikolab.ingest.stem_loader import load_mono_audio
-from taikolab.schemas import EnergyPoint, OnsetEvent, StemPaths
+from taikolab.schemas import EnergyPoint, OnsetEvent, SongAnalysis, StemPaths
 
 
 def extract_vocal_events(vocals_path: Path) -> list[OnsetEvent]:
@@ -71,7 +71,7 @@ def extract_guitar_events(instruments_path: Path) -> list[OnsetEvent]:
 
 
 def compute_energy_curve(stems: StemPaths, duration_sec: float, step_sec: float = 0.2) -> list[EnergyPoint]:
-    """Compute compact 5Hz RMS energy summary across stems for UI & diagnostics."""
+    """Compute normalized 5Hz stem RMS for arrangement, UI, and diagnostics."""
     def _sampled_rms(path_str: str | None) -> np.ndarray:
         n_bins = max(1, int(np.ceil(duration_sec / step_sec)))
         if not path_str:
@@ -99,3 +99,25 @@ def compute_energy_curve(stems: StemPaths, duration_sec: float, step_sec: float 
         )
         for i in range(n)
     ]
+
+
+def ensure_energy_curve(analysis: SongAnalysis) -> bool:
+    """Populate missing cached stem-energy data when at least one stem is available."""
+    if analysis.energy_curve:
+        return False
+
+    available_stems = StemPaths(
+        drums=analysis.stems.drums if analysis.stems.drums and Path(analysis.stems.drums).is_file() else None,
+        vocals=analysis.stems.vocals if analysis.stems.vocals and Path(analysis.stems.vocals).is_file() else None,
+        bass=analysis.stems.bass if analysis.stems.bass and Path(analysis.stems.bass).is_file() else None,
+        instruments=(
+            analysis.stems.instruments
+            if analysis.stems.instruments and Path(analysis.stems.instruments).is_file()
+            else None
+        ),
+    )
+    if not any((available_stems.drums, available_stems.vocals, available_stems.bass, available_stems.instruments)):
+        return False
+
+    analysis.energy_curve = compute_energy_curve(available_stems, analysis.duration_sec)
+    return True

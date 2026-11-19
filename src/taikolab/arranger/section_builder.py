@@ -20,6 +20,7 @@ class MeasurePlan:
     max_nps: float = 10.0
     min_gap_ms: float = 55.0
     is_blast_zone: bool = False
+    low_energy_guitar: bool = False
 
 
 def _default_mode_for_difficulty(difficulty: DifficultyLevel, cfg: AppConfig) -> FollowMode:
@@ -75,6 +76,18 @@ def build_measure_plans(
             g for g in analysis.guitar_events
             if s.start_sec <= g.time_sec < s.end_sec
         ]
+        guitar_energy = [
+            point.guitar_rms
+            for point in analysis.energy_curve
+            if s.start_sec <= point.time_sec < s.end_sec
+        ]
+        low_energy_guitar = (
+            bool(bar_guitars)
+            and not bar_drums
+            and bool(guitar_energy)
+            and any(value > 0.0 for value in guitar_energy)
+            and sum(guitar_energy) / len(guitar_energy) < cfg.settings.quiet_guitar_rms_threshold
+        )
 
         drum_nps = len(bar_drums) / dur
         is_blast = (s.bpm >= cfg.hori.blast_bpm_threshold and drum_nps >= max(15.2, base_max_nps * 1.20))
@@ -92,9 +105,9 @@ def build_measure_plans(
         if difficulty in ("easy", "normal") and mode == "vocals" and len(bar_vocals) == 0:
             if len(bar_drums) >= 2:
                 mode = "drums"
-            elif len(bar_guitars) >= 2:
+            elif len(bar_guitars) >= 2 or low_energy_guitar:
                 mode = "guitar"
-        elif mode == "drums" and len(bar_drums) == 0 and len(bar_guitars) >= 2:
+        elif mode == "drums" and len(bar_drums) == 0 and (len(bar_guitars) >= 2 or low_energy_guitar):
             mode = "guitar"
 
         ov = _find_section_override(mid, overrides)
@@ -126,6 +139,7 @@ def build_measure_plans(
                 max_nps=max_nps,
                 min_gap_ms=base_min_gap_ms,
                 is_blast_zone=is_blast,
+                low_energy_guitar=low_energy_guitar and mode in ("guitar", "hybrid"),
             )
         )
 

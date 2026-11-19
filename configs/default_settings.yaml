@@ -17,4 +17,7 @@ target_highway_speed: 101.343
 # Adjust #SCROLL inversely on BPM changes to keep note movement consistent.
 normalize_scroll_on_bpm_change: true
 
+# Quiet guitar-only measures use one downbeat below this fraction of peak stem RMS.
+quiet_guitar_rms_threshold: 0.25
+
 default_preset: "punk_gallop"

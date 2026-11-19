@@ -79,7 +79,7 @@ def apply_hori_ergonomics(
     cfg: AppConfig,
     difficulty: DifficultyLevel,
 ) -> list[ChartMeasure]:
-    """Apply Hori limits, source-supported fill rolls, and Easy-mode phrase rests."""
+    """Apply Hori limits and phrasing while preserving quiet-guitar downbeats."""
     by_measure: list[dict[int, PlacedCandidate]] = [{} for _ in slots]
     for (m_idx, s_idx), cand in candidates.items():
         if 0 <= m_idx < len(slots):
@@ -96,6 +96,9 @@ def apply_hori_ergonomics(
     if difficulty == "easy":
         active_streak = 0
         for m_idx in range(len(slots)):
+            if plans[m_idx].low_energy_guitar:
+                active_streak = 0
+                continue
             if len(by_measure[m_idx]) > 0:
                 active_streak += 1
                 if active_streak > 2:

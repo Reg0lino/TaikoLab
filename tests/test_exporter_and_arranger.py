@@ -17,6 +17,7 @@ from taikolab.schemas import (
     ChartDifficulty,
     ChartMeasure,
     DrumHit,
+    EnergyPoint,
     OnsetEvent,
     SongAnalysis,
     SongOverrides,
@@ -71,6 +72,35 @@ def _make_byob_like_analysis() -> SongAnalysis:
         ],
         drum_hits=drums,
         guitar_events=guitars,
+    )
+
+
+def _make_guitar_energy_analysis(include_energy: bool = True) -> SongAnalysis:
+    beats = [
+        BeatEvent(time_sec=i * 0.5, is_downbeat=(i % 4 == 0))
+        for i in range(12)
+    ]
+    guitar_events = [
+        OnsetEvent(time_sec=time_sec, strength=0.8)
+        for time_sec in (0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25, 3.75)
+    ]
+    energy_curve = (
+        [
+            EnergyPoint(time_sec=i * 0.2, guitar_rms=0.1 if i < 10 else 0.5)
+            for i in range(30)
+        ]
+        if include_energy
+        else []
+    )
+    return SongAnalysis(
+        song_id="guitar_energy",
+        title="Guitar Energy",
+        audio_path="audio.wav",
+        duration_sec=6.0,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=6.0, bpm=120.0, numerator=4, denominator=4)],
+        guitar_events=guitar_events,
+        energy_curve=energy_curve,
     )
 
 
@@ -171,6 +201,41 @@ def test_byob_synthetic_meter_and_zero_drift(tmp_path: Path):
 
     report = format_chart_report(chart)
     assert "ONI" in report
+
+
+def test_quiet_guitar_measure_becomes_one_downbeat_on_all_difficulties():
+    cfg = load_config("alt_rock")
+    chart = arrange_song(_make_guitar_energy_analysis(), cfg)
+
+    for course in chart.courses:
+        quiet_measure = course.measures[0]
+        quiet_notes = [idx for idx, note in enumerate(quiet_measure.notes) if note != TaikoNote.REST]
+        assert quiet_notes == [0]
+        assert quiet_measure.notes[0] == TaikoNote.DON
+
+        louder_measure = course.measures[1]
+        assert sum(note != TaikoNote.REST for note in louder_measure.notes) >= 3
+
+
+def test_missing_energy_curve_preserves_existing_guitar_arrangement():
+    cfg = load_config("alt_rock")
+    chart = arrange_song(_make_guitar_energy_analysis(include_energy=False), cfg)
+
+    for course in chart.courses:
+        assert sum(note != TaikoNote.REST for note in course.measures[0].notes) > 1
+
+
+def test_zero_guitar_energy_does_not_treat_missing_stem_as_quiet_music():
+    cfg = load_config("alt_rock")
+    analysis = _make_guitar_energy_analysis()
+    analysis.energy_curve = [
+        EnergyPoint(time_sec=i * 0.2, guitar_rms=0.0)
+        for i in range(30)
+    ]
+    chart = arrange_song(analysis, cfg)
+
+    for course in chart.courses:
+        assert sum(note != TaikoNote.REST for note in course.measures[0].notes) > 1
 
 
 def test_tja_writer_formats_zero_offset_without_negative_sign():

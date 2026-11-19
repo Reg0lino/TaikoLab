@@ -16,7 +16,7 @@ def apply_guitar_fusion(
     plans: list[MeasurePlan],
     cfg: AppConfig,
 ) -> dict[tuple[int, int], PlacedCandidate]:
-    """Promote aligned guitar+drum hits to Big Notes and inject riff hits on sparse bars."""
+    """Fuse guitar accents, while simplifying quiet guitar-only bars to downbeats."""
     merged = dict(placed)
 
     for ev in guitar_events:
@@ -26,6 +26,8 @@ def apply_guitar_fusion(
         m_idx, s_idx = loc
         plan = plans[m_idx]
         if plan.follow_mode not in ("hybrid", "guitar"):
+            continue
+        if plan.low_energy_guitar:
             continue
         if ev.strength < cfg.preset.guitar_min_strength:
             continue
@@ -53,5 +55,22 @@ def apply_guitar_fusion(
                 priority=0.65 * ev.strength,
                 source="guitar",
             )
+
+    for slot, plan in zip(slots, plans):
+        if not plan.low_energy_guitar:
+            continue
+        measure_idx = slot.measure_idx
+        if any(m_idx == measure_idx for m_idx, _ in placed):
+            continue
+
+        key = (measure_idx, 0)
+        merged[key] = PlacedCandidate(
+            measure_idx=measure_idx,
+            slot_idx=0,
+            time_sec=slot.start_sec,
+            note_type=TaikoNote.DON,
+            priority=0.65,
+            source="guitar:downbeat",
+        )
 
     return merged

@@ -4,7 +4,7 @@ Updated: 2026-11-18
 
 ## Current goal
 
-Dumpweed timing was playtested and accepted, and its separate variety test was judged good enough for now. Its notes, offset, and BPM map are unchanged; only its highway scroll was normalized to the shared target. The Leaving Song Part II has been imported with an alt-rock profile and normalized to the same effective highway speed. Its timing click overlay and chart still need the user's playtest.
+Dumpweed timing was playtested and accepted, and its separate variety test was judged good enough for now. Its notes, offset, and BPM map are unchanged; only its highway scroll was normalized to the shared target. The Leaving Song Part II uses the alt-rock profile and shared highway speed. A quiet-guitar safeguard was added and the chart rebuilt; the new intro still needs the user's playtest.
 
 ## Gemini handoff: project map and workflow
 
@@ -13,7 +13,7 @@ This section is intended to give a fresh AI instance enough context to continue 
 ```text
 TaikoLab/
 |-- configs/
-|   |-- default_settings.yaml       Global offsets, tempo deadzone, highway-speed target
+|   |-- default_settings.yaml       Global offsets, tempo deadzone, highway speed, quiet-guitar threshold
 |   |-- hori_default.yaml           Course density, note gaps, roll ergonomics
 |   `-- presets/
 |       |-- punk_gallop.yaml        Punk chart-source and drum-mapping rules
@@ -156,7 +156,7 @@ The existing 2.5 BPM deadzone alone allowed this song's serialized map to drift 
 
 The generated [LeavingsongPart2 chart](./workspace/leavingsongpart2/leavingsongpart2.tja) is also exported to `C:/!CODE/YataiDON-Windows/Songs/leavingsongpart2/leavingsongpart2.tja`. Its Easy/Normal/Hard/Oni courses each contain 77 measures and 36 BPM changes. Simulating the emitted commands gives a maximum grid drift of 47.5 ms and final end error of about -4.9 ms. The workspace and simulator TJA hashes match, as do the `audio_clean.wav` copies.
 
-A 30-second loud-click diagnostic is available at [leavingsongpart2_click_reference_0ms.wav](./workspace/leavingsongpart2/diagnostics/leavingsongpart2_click_reference_0ms.wav). It overlays low clicks on aligned MIDI kicks and higher clicks on aligned MIDI snares; the first 30 seconds contain 37 kick clicks and 13 snare clicks. This is a listening aid, not proof of alignment. The user has not yet playtested this song's chart or click overlay.
+A 30-second loud-click diagnostic is available at [leavingsongpart2_click_reference_0ms.wav](./workspace/leavingsongpart2/diagnostics/leavingsongpart2_click_reference_0ms.wav). It overlays low clicks on aligned MIDI kicks and higher clicks on aligned MIDI snares; the first 30 seconds contain 37 kick clicks and 13 snare clicks. This is a listening aid, not proof of alignment. The user has now playtested the chart and says the courses are good overall but the quiet intro is hard to play; the rebuilt intro and click overlay still await confirmation.
 
 ### Standardized highway speed
 
@@ -164,18 +164,32 @@ The accepted Dumpweed chart has `BPM:202.686` and `#SCROLL 0.500`, so its refere
 
 [tja_writer.py](./src/taikolab/exporters/tja_writer.py) emits `#SCROLL = target_highway_speed / active_BPM` at BPM transitions. This changes only visual note movement; `OFFSET`, `#BPMCHANGE`, `#MEASURE`, note rows, and audio timestamps are unchanged. The feature is passed through both the CLI and UI export paths ([cli.py](./src/taikolab/cli.py), [server.py](./src/taikolab/ui/server.py)). A regression test verifies that the BPM×SCROLL product stays at the target while the timing-command sequence remains identical.
 
-All 10 known TaikoLab-generated TJA files were brought to this standard: the three workspace charts (`byob`, `dumpweed`, `leavingsongpart2`), their three YataiDON exports, and four Dumpweed diagnostic/test exports. The eight pre-existing TJA files were migrated by changing/inserting only `#SCROLL` directives; every other line, including BPM, offset, meter, and note rows, was checked unchanged. The current LeavingsongPart2 chart was re-rendered from its cached analysis, with all non-scroll lines verified unchanged. Each workspace/export pair has matching file hashes. Across all measure rows, emitted `BPM × SCROLL` is 101.251–101.423 (target 101.343; the small spread is from TJA's three-decimal scroll values). The rest of the YataiDON library was not touched.
+All 10 known TaikoLab-generated TJA files were brought to this standard: the three workspace charts (`byob`, `dumpweed`, `leavingsongpart2`), their three YataiDON exports, and four Dumpweed diagnostic/test exports. The eight pre-existing TJA files were migrated by changing/inserting only `#SCROLL` directives; every other line, including BPM, offset, meter, and note rows, was checked unchanged. At the time of the speed-only re-render, LeavingsongPart2's non-scroll lines were verified unchanged; the later quiet-guitar safeguard intentionally simplifies its first five measures as documented below. Each workspace/export pair has matching file hashes. Across all measure rows, emitted `BPM × SCROLL` is 101.251–101.423 (target 101.343; the small spread is from TJA's three-decimal scroll values). The rest of the YataiDON library was not touched.
 
 The highway-speed change updates [default_settings.yaml](./configs/default_settings.yaml), [config.py](./src/taikolab/config.py), [tja_writer.py](./src/taikolab/exporters/tja_writer.py), [cli.py](./src/taikolab/cli.py), [server.py](./src/taikolab/ui/server.py), and the scroll regression in [test_exporter_and_arranger.py](./tests/test_exporter_and_arranger.py). The `alt_rock.yaml` preset and LeavingsongPart2 stem-discovery regression are also part of this work.
 
 Validation completed:
 
-- The focused exporter/arranger and ingest test files: 17 passed.
+- The latest focused suite after the quiet-guitar change: 28 passed across the arranger, ingest, and config tests.
 - `git diff --check`: clean.
 - Dumpweed accepted timing-command map: exact match (28 commands).
 - LeavingsongPart2 timing simulation: 77 measures per course, max drift 47.5 ms.
 - Pylance signature compatibility: all call sites for the modified TJA writer APIs are compatible.
-- Ruff passed with known baseline findings suppressed. The unrestricted check still reports pre-existing `UP035`, `F841`, and `I001` findings in unchanged import/dead-local lines; those unrelated findings were not modified.
+- Ruff passed with known baseline findings suppressed. The unrestricted check still reports pre-existing lint findings on unchanged lines; those unrelated findings were not modified.
+
+## Quiet guitar intro safeguard
+
+The user reported that the crescendoing guitar at the start of LeavingsongPart2 produced too many hard-to-play notes across every course. The cause was guitar-onset injection: the intro has repeated detected guitar attacks but no MIDI drum hits. Imported MIDI analyses also lacked the `energy_curve` that the audio-only analysis path already generated.
+
+`quiet_guitar_rms_threshold: 0.25` is a global setting in [default_settings.yaml](./configs/default_settings.yaml). For each measure, the arranger averages the 5 Hz guitar-stem RMS samples, normalized against that stem's peak. If guitar events and nonzero guitar energy exist, no drum hits are present, and that mean is below the threshold, the guitar detail is replaced by one Don at slot 0 (the measure downbeat). Drum-led measures retain their MIDI drum notes; silent measures or missing guitar-energy data are not treated as quiet music. Easy's ordinary two-measure phrase-rest rule is bypassed for these quiet guitar-only bars so the downbeat remains playable.
+
+The MIDI import path now creates energy data, and CLI/UI arrangement backfill it from available stems for older cached analyses and save it into `analysis.json`. If no usable stems or no energy samples are available, the old arrangement behavior is preserved.
+
+For LeavingsongPart2, the energy cache now contains 1,056 samples. Its first five measures have average guitar RMS values of 0.018, 0.060, 0.126, 0.180, and 0.228, all below the 0.25 threshold. Each course now has exactly one Don at slot 0 in those five measures. The next measure contains five MIDI drum hits and keeps its drum-driven pattern. The rebuilt chart retains `OFFSET:-1.780`, 77 measures and 36 BPM changes per course, and the 101.343 highway-speed target. Workspace and YataiDON TJA copies match.
+
+This change updates [config.py](./src/taikolab/config.py), [section_builder.py](./src/taikolab/arranger/section_builder.py), [mapper_fusion.py](./src/taikolab/arranger/mapper_fusion.py), [hori_filter.py](./src/taikolab/arranger/hori_filter.py), [vocal_riff_tracker.py](./src/taikolab/ingest/vocal_riff_tracker.py), [tab_sync.py](./src/taikolab/ingest/tab_sync.py), [cli.py](./src/taikolab/cli.py), [server.py](./src/taikolab/ui/server.py), and the focused arranger/ingest/config tests.
+
+Latest focused validation: 28 passed across `test_exporter_and_arranger.py`, `test_ingest_dsp_and_pipeline.py`, and `test_schemas_and_config.py`. Pylance reported no diagnostics in the changed arranger, ingest, CLI, or test files. The full suite was not rerun; the known tab-sync test/source mismatch below remains.
 
 ## Hard-chart detail baseline
 
@@ -187,7 +201,7 @@ The current arrangement code adds variation without changing any chart measure's
 
 - **Hard:** Detects runs of at least four consecutive measures with the same mapped drum pattern. Only a repeated run near the end of the song is embellished, so earlier Hard sections remain unchanged. Within that run, alternating offbeat positions are chosen only when a ride hit actually exists at that MIDI time. These selected ride events become Ka accents; kick and snare placements are left intact.
 - **Oni:** Uses the same repeated-pattern detection across the song and a richer repeating selection cycle for MIDI ride accents. This gives repeated grooves different playable shapes rather than copying the Hard course or adding arbitrary timestamps.
-- **Easy/Normal rolls:** Rolls replace only a rapid source-drum run, not a whole ordinary groove. A candidate needs at least five mapped drum hits in a span of at least the configured minimum roll duration, no gap above 180 ms, and a run of at least three consecutive hits from the same drum source. Easy and Normal are each capped at three such rolls per course, with at least four measures between selected rolls. The start/end markers remain on the existing quantized grid. Existing Easy phrasing still inserts a full measure rest after two active measures.
+- **Easy/Normal rolls:** Rolls replace only a rapid source-drum run, not a whole ordinary groove. A candidate needs at least five mapped drum hits in a span of at least the configured minimum roll duration, no gap above 180 ms, and a run of at least three consecutive hits from the same drum source. Easy and Normal are each capped at three such rolls per course, with at least four measures between selected rolls. The start/end markers remain on the existing quantized grid. Easy phrasing normally inserts a full measure rest after two active measures, except that low-energy guitar-only measures retain their single downbeat.
 - **Timing invariant:** These changes modify note codes only. They do not shift events, add measures, alter measure boundaries, change BPM, or change `OFFSET`.
 
 On the cached Dumpweed analysis, the variety test has 620 Hard notes (up from 610) and 780 Oni notes (up from 716). Hard ride accents appear only in the final repeated phrase; Oni uses varied accents in repeated phrases. Easy has three fill rolls in measures 38, 55, and 70; Normal has three in measures 15, 55, and 70; Hard and Oni do not receive these fill rolls. Easy retains 41 empty measures from its existing pause rule.
@@ -196,14 +210,14 @@ On the cached Dumpweed analysis, the variety test has 620 Hard notes (up from 61
 
 - `tests/test_exporter_and_arranger.py`: 10 passed, including repeated-phrase variation, limited source-fill rolls, Easy rests, and the tempo-map regression tests.
 - Full suite: 29 passed, 1 failed. `test_isolated_drum_warp_tracks_smooth_drift` imports `_estimate_isolated_drum_warp`, which is absent from the current modified [tab_sync.py](./src/taikolab/ingest/tab_sync.py). This is a pre-existing alignment-test/source mismatch, unrelated to the timing serializer or chart-variation changes.
-- The current scoped Ruff check passes with known baseline codes ignored. The unrestricted check still reports pre-existing `UP035`, `F841`, and `I001` findings in unchanged lines.
+- The current scoped Ruff check passes with known baseline codes ignored. An unrestricted check reports pre-existing `I001`, `PLR1730`, `RUF015`, `RUF046`, `UP035`, and `F841` findings on unchanged lines.
 - `git diff --check` completed without whitespace errors. Git reported line-ending conversion warnings for modified files.
 - Existing local edits in [tab_sync.py](./src/taikolab/ingest/tab_sync.py) were preserved. The duplicate stem scan in [stem_loader.py](./src/taikolab/ingest/stem_loader.py) was removed because it caused this import to choose a stem as the full mix. The prior [hori_filter.py](./src/taikolab/arranger/hori_filter.py) edits were retained and extended surgically for source-supported rolls. Do not discard unrelated local edits while continuing.
 
 ## Suggested next steps
 
-1. Listen to the [LeavingsongPart2 click reference](./workspace/leavingsongpart2/diagnostics/leavingsongpart2_click_reference_0ms.wav) over the song, especially the opening and later sections. The clicks come from the aligned MIDI kick/snare timestamps.
-2. Play the [LeavingsongPart2 chart](C:/!CODE/YataiDON-Windows/Songs/leavingsongpart2/leavingsongpart2.tja) in OpenTaiko and report whether it starts correctly, stays with the drums, and feels appropriate for this slower alt-rock song.
-3. If timing is wrong, note whether the clicks are already off at the start or only drift later; do not change the global offset to compensate for a tempo-map problem.
+1. Play the rebuilt [LeavingsongPart2 chart](C:/!CODE/YataiDON-Windows/Songs/leavingsongpart2/leavingsongpart2.tja) in OpenTaiko, especially the first five measures on each course, and confirm the single downbeat per bar is easier to play.
+2. The [LeavingsongPart2 click reference](./workspace/leavingsongpart2/diagnostics/leavingsongpart2_click_reference_0ms.wav) remains available if timing needs another check. If it is off, note whether it is wrong at the start or drifts later; do not change the global offset to compensate for a tempo-map problem.
+3. After the intro is confirmed, pause chart work and gather the user's remaining requirements for the drop-a-song automatic build tool. That tool has not been started.
 4. Choose future song presets by style instead of assuming punk. Continue to keep MIDI/audio timing separate from genre-specific chart rules.
 5. Address the known `tab_sync.py` test/source mismatch before treating the full suite as green.

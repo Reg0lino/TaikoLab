@@ -508,6 +508,10 @@ def import_midi_aligned(
         guitar_events=warped_guitars,
     )
 
+    from taikolab.ingest.vocal_riff_tracker import ensure_energy_curve
+
+    ensure_energy_curve(analysis)
+
     out_json = song_dir / "analysis.json"
     out_json.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
     print(f"[TaikoLab TabSync] Saved DTW-aligned analysis -> {out_json} ({len(warped_bars)} measures, {len(regions)} regions)")

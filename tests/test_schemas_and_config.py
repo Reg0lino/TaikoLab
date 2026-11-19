@@ -16,7 +16,7 @@ from taikolab.schemas import (
 )
 
 
-@pytest.mark.parametrize("preset_name", ["punk_gallop", "mathcore", "powerviolence"])
+@pytest.mark.parametrize("preset_name", ["punk_gallop", "alt_rock", "mathcore", "powerviolence"])
 def test_load_all_presets(preset_name: str):
     cfg = load_config(preset_name=preset_name)
     assert cfg.preset.name == preset_name

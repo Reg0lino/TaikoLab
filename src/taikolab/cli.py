@@ -52,6 +52,11 @@ def _cmd_arrange(args: argparse.Namespace) -> None:
         )
 
     analysis = SongAnalysis.model_validate_json(analysis_path.read_text(encoding="utf-8"))
+    if not analysis.energy_curve:
+        from taikolab.ingest.vocal_riff_tracker import ensure_energy_curve
+
+        if ensure_energy_curve(analysis):
+            analysis_path.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
 
     overrides: SongOverrides | None = None
     overrides_path = song_dir / "overrides.json"

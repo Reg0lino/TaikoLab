@@ -204,6 +204,11 @@ def _build_chart_payload(song_id: str, overrides: SongOverrides | None = None, e
         raise HTTPException(status_code=404, detail=f"Missing analysis.json for '{song_id}'")
 
     analysis = SongAnalysis.model_validate_json(analysis_path.read_text(encoding="utf-8"))
+    if not analysis.energy_curve:
+        from taikolab.ingest.vocal_riff_tracker import ensure_energy_curve
+
+        if ensure_energy_curve(analysis):
+            analysis_path.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
 
     overrides_path = song_dir / "overrides.json"
     if overrides is None:
