@@ -16,6 +16,7 @@ from taikolab.schemas import (
     BeatEvent,
     ChartDifficulty,
     ChartMeasure,
+    DifficultyRuleOverride,
     DrumHit,
     EnergyPoint,
     OnsetEvent,
@@ -148,7 +149,7 @@ def _make_sparse_fill_analysis() -> SongAnalysis:
             for hit_idx in range(6):
                 drums.append(
                     DrumHit(
-                        time_sec=start + 0.15 + hit_idx * 0.075,
+                        time_sec=start + 0.675 + hit_idx * 0.075,
                         drum_class="snare",
                         velocity=0.8,
                     )
@@ -203,6 +204,61 @@ def test_byob_synthetic_meter_and_zero_drift(tmp_path: Path):
     assert "ONI" in report
 
 
+def test_short_one_beat_pickup_is_not_merged_with_following_measure():
+    pickup_duration = 60.0 / 113.27
+    regular_bar_duration = 240.0 / 112.37
+    second_measure_start = pickup_duration
+    third_measure_start = second_measure_start + regular_bar_duration
+    duration = third_measure_start + regular_bar_duration
+    beats = [
+        BeatEvent(time_sec=0.0, is_downbeat=True),
+        BeatEvent(time_sec=second_measure_start, is_downbeat=True),
+    ]
+    beats.extend(
+        BeatEvent(time_sec=second_measure_start + beat * regular_bar_duration / 4)
+        for beat in range(1, 4)
+    )
+    beats.append(BeatEvent(time_sec=third_measure_start, is_downbeat=True))
+    beats.extend(
+        BeatEvent(time_sec=third_measure_start + beat * regular_bar_duration / 4)
+        for beat in range(1, 4)
+    )
+    analysis = SongAnalysis(
+        song_id="short_pickup",
+        title="Short Pickup",
+        audio_path="audio.wav",
+        duration_sec=duration,
+        beats=beats,
+        tempo_regions=[
+            TempoRegion(
+                start_sec=0.0,
+                end_sec=second_measure_start,
+                bpm=113.27,
+                numerator=1,
+                denominator=4,
+            ),
+            TempoRegion(
+                start_sec=second_measure_start,
+                end_sec=duration,
+                bpm=112.37,
+                numerator=4,
+                denominator=4,
+            ),
+        ],
+    )
+
+    chart = arrange_song(analysis, load_config("punk_gallop"))
+    text = render_tja_text(chart)
+
+    for course in chart.courses:
+        assert course.measures[0].numerator == 1
+        assert course.measures[0].denominator == 4
+        assert course.measures[0].end_sec == pytest.approx(second_measure_start)
+        assert course.measures[1].numerator == 4
+    assert "#MEASURE 1/4" in text
+    assert "#MEASURE 4/4" in text
+
+
 def test_quiet_guitar_measure_becomes_one_downbeat_on_all_difficulties():
     cfg = load_config("alt_rock")
     chart = arrange_song(_make_guitar_energy_analysis(), cfg)
@@ -215,6 +271,24 @@ def test_quiet_guitar_measure_becomes_one_downbeat_on_all_difficulties():
 
         louder_measure = course.measures[1]
         assert sum(note != TaikoNote.REST for note in louder_measure.notes) >= 3
+
+
+def test_quiet_guitar_controls_can_leave_the_intro_empty():
+    analysis = _make_guitar_energy_analysis()
+    chart = arrange_song(
+        analysis,
+        load_config("taiko_auto"),
+        overrides=SongOverrides(
+            song_id=analysis.song_id,
+            quiet_guitar_rms_threshold=0.2,
+            quiet_guitar_behavior="empty",
+        ),
+    )
+
+    assert all(
+        all(note == TaikoNote.REST.value for note in course.measures[0].notes)
+        for course in chart.courses
+    )
 
 
 def test_missing_energy_curve_preserves_existing_guitar_arrangement():
@@ -438,15 +512,74 @@ def test_repeated_phrases_use_varying_midi_ride_accents_only_on_hard_and_oni():
     assert [m.end_sec for m in hard.measures] == [m.end_sec for m in oni.measures]
 
 
+def test_oni_repeat_variation_slider_changes_colors_without_moving_notes():
+    analysis = _make_repeated_ride_analysis()
+    cfg = load_config("taiko_auto")
+    baseline = arrange_song(analysis, cfg)
+    varied = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id=analysis.song_id,
+            difficulty_overrides={
+                "oni": DifficultyRuleOverride(phrase_variation=1.0)
+            },
+        ),
+    )
+    baseline_oni = next(course for course in baseline.courses if course.difficulty == "oni")
+    varied_oni = next(course for course in varied.courses if course.difficulty == "oni")
+
+    assert baseline_oni.measures[4].notes == varied_oni.measures[4].notes
+    assert any(
+        baseline_oni.measures[idx].notes != varied_oni.measures[idx].notes
+        for idx in (5, 6, 7)
+    )
+    for idx in range(len(baseline_oni.measures)):
+        assert [
+            note != TaikoNote.REST.value
+            for note in baseline_oni.measures[idx].notes
+        ] == [
+            note != TaikoNote.REST.value
+            for note in varied_oni.measures[idx].notes
+        ]
+
+
+def test_density_slider_reduces_the_course_note_limit():
+    analysis = _make_sparse_fill_analysis()
+    cfg = load_config("taiko_auto")
+    baseline = arrange_song(analysis, cfg)
+    reduced = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id=analysis.song_id,
+            fill_rolls_per_course=0,
+            difficulty_overrides={
+                "normal": DifficultyRuleOverride(density_scale=0.5)
+            },
+        ),
+    )
+    baseline_normal = next(course for course in baseline.courses if course.difficulty == "normal")
+    reduced_normal = next(course for course in reduced.courses if course.difficulty == "normal")
+
+    assert sum(note != 0 for measure in reduced_normal.measures for note in measure.notes) < sum(
+        note != 0 for measure in baseline_normal.measures for note in measure.notes
+    )
+
+
 def test_easy_and_normal_get_at_most_three_midi_fill_rolls_and_easy_pauses():
     cfg = load_config("punk_gallop")
     chart = arrange_song(_make_sparse_fill_analysis(), cfg)
     courses = {course.difficulty: course for course in chart.courses}
     easy_rolls = [m for m in courses["easy"].measures if TaikoNote.DRUMROLL.value in m.notes]
     normal_rolls = [m for m in courses["normal"].measures if TaikoNote.DRUMROLL.value in m.notes]
+    hard_rolls = [m for m in courses["hard"].measures if TaikoNote.DRUMROLL.value in m.notes]
+    oni_rolls = [m for m in courses["oni"].measures if TaikoNote.DRUMROLL.value in m.notes]
 
     assert len(easy_rolls) == 3
     assert len(normal_rolls) == 3
+    assert not hard_rolls
+    assert not oni_rolls
     assert [m.measure_idx for m in normal_rolls] == [0, 8, 12]
     assert all(
         sum(note == TaikoNote.DRUMROLL.value for note in m.notes)
@@ -457,6 +590,71 @@ def test_easy_and_normal_get_at_most_three_midi_fill_rolls_and_easy_pauses():
     assert any(not any(m.notes) for m in courses["easy"].measures)
     assert [m.start_sec for m in courses["easy"].measures] == [m.start_sec for m in courses["normal"].measures]
     assert [m.end_sec for m in courses["easy"].measures] == [m.end_sec for m in courses["normal"].measures]
+
+
+def test_fill_roll_control_creates_capped_game_rolls_at_measure_ends():
+    analysis = _make_sparse_fill_analysis()
+    chart = arrange_song(
+        analysis,
+        load_config("taiko_auto"),
+        overrides=SongOverrides(
+            song_id=analysis.song_id,
+            fill_rolls_per_course=1,
+        ),
+    )
+
+    for course in chart.courses:
+        roll_measures = [
+            measure
+            for measure in course.measures
+            if TaikoNote.DRUMROLL.value in measure.notes
+        ]
+        assert len(roll_measures) == 1
+        measure = roll_measures[0]
+        roll_end_slot = measure.notes.index(TaikoNote.END.value)
+        assert roll_end_slot >= int(len(measure.notes) * 0.65)
+
+        roll_end_time = (
+            measure.start_sec
+            + roll_end_slot / len(measure.notes) * (measure.end_sec - measure.start_sec)
+        )
+        next_note_times = [
+            other.start_sec
+            + slot_idx / len(other.notes) * (other.end_sec - other.start_sec)
+            for other in course.measures
+            for slot_idx, note in enumerate(other.notes)
+            if note in (
+                TaikoNote.DON.value,
+                TaikoNote.KAT.value,
+                TaikoNote.BIG_DON.value,
+                TaikoNote.BIG_KAT.value,
+            )
+            and other.start_sec
+            + slot_idx / len(other.notes) * (other.end_sec - other.start_sec)
+            > roll_end_time
+        ]
+        if next_note_times:
+            min_gap = 2 * (measure.end_sec - measure.start_sec) / len(measure.notes)
+            assert min(next_note_times) - roll_end_time >= min_gap - 1e-6
+
+
+def test_per_course_fill_roll_control_only_affects_selected_courses():
+    chart = arrange_song(
+        _make_sparse_fill_analysis(),
+        load_config("punk_gallop"),
+        overrides=SongOverrides(
+            song_id="test-fill-rolls",
+            fill_rolls_by_course={"easy": 0, "normal": 0, "hard": 1, "oni": 0},
+        ),
+    )
+    roll_counts = {
+        course.difficulty: sum(
+            TaikoNote.DRUMROLL.value in measure.notes for measure in course.measures
+        )
+        for course in chart.courses
+    }
+
+    assert roll_counts == {"easy": 0, "normal": 0, "hard": 1, "oni": 0}
 
 
 def test_california_uber_alles_normal_follows_vocals_hard_follows_drums():

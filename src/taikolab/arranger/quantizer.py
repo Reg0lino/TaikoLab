@@ -57,6 +57,24 @@ def _active_section_at(t: float, overrides: SongOverrides | None) -> SectionOver
     return None
 
 
+def _is_valid_short_measure(
+    start_sec: float,
+    end_sec: float,
+    regions: list[TempoRegion],
+) -> bool:
+    region = _active_region_at(start_sec + 0.02, regions)
+    if region is None:
+        return False
+
+    expected_duration = 240.0 * region.numerator / (region.denominator * region.bpm)
+    actual_duration = end_sec - start_sec
+    tolerance = max(0.08, expected_duration * 0.12)
+    return (
+        expected_duration < MIN_BAR_DURATION_SEC
+        and abs(actual_duration - expected_duration) <= tolerance
+    )
+
+
 def _resolve_meter_and_bpm(
     time_sec: float,
     dur: float,
@@ -151,7 +169,11 @@ def _build_slots_from_custom_downbeats(
     return slots
 
 
-def _build_downbeat_spans(beats: list[BeatEvent], duration_sec: float) -> list[tuple[float, float, int]]:
+def _build_downbeat_spans(
+    beats: list[BeatEvent],
+    duration_sec: float,
+    regions: list[TempoRegion],
+) -> list[tuple[float, float, int]]:
     all_times = [b.time_sec for b in beats]
     raw_dbs = [b.time_sec for b in beats if b.is_downbeat]
 
@@ -161,7 +183,9 @@ def _build_downbeat_spans(beats: list[BeatEvent], duration_sec: float) -> list[t
             clean_dbs.append(db)
             continue
         beats_between = [t for t in all_times if clean_dbs[-1] - 0.02 <= t < db - 0.02]
-        if (db - clean_dbs[-1]) >= MIN_BAR_DURATION_SEC and len(beats_between) >= 2:
+        if (
+            (db - clean_dbs[-1]) >= MIN_BAR_DURATION_SEC and len(beats_between) >= 2
+        ) or _is_valid_short_measure(clean_dbs[-1], db, regions):
             clean_dbs.append(db)
 
     if len(clean_dbs) < 2:
@@ -179,7 +203,7 @@ def _build_downbeat_spans(beats: list[BeatEvent], duration_sec: float) -> list[t
                 continue
             end = min(duration_sec, start + max(MIN_BAR_DURATION_SEC, prev_dur))
         dur = end - start
-        if dur < MIN_BAR_DURATION_SEC:
+        if dur < MIN_BAR_DURATION_SEC and not _is_valid_short_measure(start, end, regions):
             continue
 
         bar_beats = [t for t in all_times if start - 0.025 <= t < end - 0.025]
@@ -212,7 +236,11 @@ def build_measure_slots(
     beats = sorted(analysis.beats, key=lambda b: b.time_sec)
     has_explicit_anchors = bool(overrides and overrides.tempo_anchors)
 
-    spans = _build_downbeat_spans(beats, analysis.duration_sec) if not has_explicit_anchors else []
+    spans = (
+        _build_downbeat_spans(beats, analysis.duration_sec, regions)
+        if not has_explicit_anchors
+        else []
+    )
     if spans:
         slots: list[MeasureSlot] = []
         idx = 0

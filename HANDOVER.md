@@ -1,10 +1,65 @@
 # TaikoLab Handover
 
-Updated: 2026-11-18
+Updated: 2026-11-19
 
 ## Current goal
 
-Dumpweed timing was playtested and accepted, and its separate variety test was judged good enough for now. Its notes, offset, and BPM map are unchanged; only its highway scroll was normalized to the shared target. The Leaving Song Part II uses the alt-rock profile and shared highway speed. A quiet-guitar safeguard was added and the chart rebuilt; the new intro still needs the user's playtest.
+Dumpweed timing was playtested and accepted, and its separate variety test was judged good enough for now. Its notes, offset, and BPM map are unchanged; only its highway scroll was normalized to the shared target. The Leaving Song Part II uses the alt-rock profile and shared highway speed. The quiet-guitar safeguard was added and the chart rebuilt; the user confirmed that the result works well.
+
+The Kill the Poor pickup/export issue is fixed and its chart is ready for playtesting. The user's latest feedback is that Kill the Poor is satisfying but too repetitive and keeps a strict kick-to-Don / snare-to-Ka mapping. Holiday in Cambodia's Hard chart is a good baseline but also repeats; Voyeur has the same repetition concern. BYOB was not quite on point, Slipknot's Eyeless did not chart well, and audio-only charting usually fails. The current wizard sprint adds per-course source and chart controls; deeper multi-bar repetition detection remains a follow-up.
+
+The user heard phrase-end drift in Foo Fighters' Everlong and over-fast slow outros in Police Truck and All His Suits Are Torn. The latest timing experiment substantially improved Everlong's MIDI/audio kick-snare alignment and fixed a false fast outro in Police Truck. Validation was run in temporary directories; existing workspace analyses and TJA files were not replaced and still need regeneration/playtesting after approval.
+
+The current wizard retains the no-style-selector design but now defaults to the prior Punk Gallop behavior: Easy/Normal follow vocals, Hard follows drums, Oni is hybrid, and Punk Gallop's original mapping is used. Sliders reset to highway speed 101.343, big-note threshold 0.88, quiet-guitar threshold 0.25, 100% density, zero repeat-color inversion, and per-course fill-roll caps Easy/Normal/Hard/Oni = 3/3/0/0. Simulator backups are placed outside the selected `Songs` folder. The currently saved chart controls in `configs/wizard_settings.json` were reset to this baseline while preserving the chosen Songs/audio/MIDI folders. The `taiko_auto` profile remains available but is no longer the wizard default. Validation: all 61 project tests pass; Ruff flags only existing import-order and RUF015 findings in the arranger/test files touched by this work.
+
+## Kill the Poor export failure and fix
+
+The MIDI/audio import and alignment for Dead Kennedys' Kill the Poor succeeded, but TJA export initially stopped because the Easy course projected 665 ms of grid drift. The cached analysis has a valid one-beat `1/4` pickup from 1.420 to 1.9497 seconds, followed by a `4/4` measure. The quantizer's noise filter rejected that first downbeat interval because it was shorter than 0.65 seconds and contained fewer than two beat events. It merged the pickup with the following `4/4` measure, but retained the pickup's `1/4` meter, producing an impossible first-bar duration and triggering the exporter guard.
+
+`src/taikolab/arranger/quantizer.py` now retains sub-0.65-second spans only when their duration agrees with the active tempo region's meter/BPM estimate. This keeps false short downbeats filtered while preserving legitimate pickup measures; the TJA writer's 100 ms drift guard was not weakened. `test_short_one_beat_pickup_is_not_merged_with_following_measure` covers the regression.
+
+The cached aligned analysis was reused; no second DTW run was needed. `taikolab.cli arrange --song dead-kennedys-kill-the-poor-auto --preset punk_gallop` now renders and exports the chart. All four courses contain 151 measures, include the opening `1/4` pickup, and pass the drift guard. The chart uses `OFFSET:-1.420`; the workspace and simulator TJA/audio files were verified identical. The failed-attempt copy remains preserved under `workspace/_failed_builds/`.
+
+## Open timing note: Descendents - Hope
+
+The user reports that the Hope chart is mostly playable but drifts in the middle. They suspect the original performance may not follow a metronome. No Hope timing changes were made here. Before changing the global offset or accepting a fixed tempo, use loud click overlays at the beginning, middle, and end to compare MIDI hits against the actual drums. A constant error suggests an offset; an error that grows or changes direction suggests a changing tempo map or alignment issue. If the recording itself speeds up or slows down, preserve its local timing and consider custom chart adjustments rather than forcing a rigid beat.
+
+## Automatic song wizard
+
+The current implementation adds a native, dark Tkinter desktop wizard for creating `-auto` charts without Gemini/OpenAI or cloud audio processing. Start it from the repository root with `.\scripts\run_wizard.ps1`, or run `taikolab-wizard` from the installed project environment. Install its optional desktop dependencies with `.\.venv\Scripts\python.exe -m pip install -e ".[desktop]"`.
+
+The wizard requires one audio file (MP3, OGG, WAV, or FLAC) and accepts an optional MIDI file. GP is intentionally not an input: TaikoLab does not parse Guitar Pro files. The wizard reads local title/artist tags with Mutagen, then suggests a title/artist from a common `artist - title` filename if tags are absent. The user must confirm or edit both values. It adds `-auto` to the in-game title and creates a filesystem-safe artist/title ID ending in `-auto`; name conflicts offer a separate numbered ID or an explicit replacement with backups.
+
+The Audiometa lookup is optional. It sends only artist/title text over HTTPS to `https://api.audiometa.io/v1/search`; it never uploads audio, MIDI, or GP. The API key is read from `AUDIOMETA_API_KEY` or the OS credential store and is never written to project JSON or the build manifest. Use **Save securely** in the UI to store a key in Windows Credential Manager. If no key/backend or API connection is available, metadata remains editable and the local build flow still works. Do not paste the key into chat or commit it.
+
+The ignored `configs/wizard_settings.json` also remembers the audio picker and MIDI picker directories independently. Each successful selection saves that file's parent folder. A first-time MIDI picker uses the remembered audio folder; after a MIDI folder is selected, it remembers and reuses that folder independently. If a saved directory no longer exists, the picker falls back to the home folder (or the remembered audio folder for MIDI).
+
+Choose either the game's `Songs` folder or its executable in the destination controls. The wizard normalizes an executable/install-folder selection to an existing `Songs` folder and rejects ambiguous or missing destinations. This preference is persisted in ignored `configs/wizard_settings.json` and overlays `opentaiko_songs_dir` at config load time without rewriting the commented YAML. New builds stage standardized `audio.<ext>` and optional `input.mid` files in `workspace/<artist-title-auto>/`, then call the existing `taikolab.cli import-tab` path when MIDI is present or `taikolab.cli build --force` for audio-only input. The existing CLI remains responsible for chart generation and simulator export.
+
+The wizard's build manifest records non-secret source names, metadata origin, preset, and status. Replacements first move the existing TaikoLab workspace song to `workspace/_backups/`; conflicting generated simulator TJA/audio files are copied to `<parent-of-Songs>/_TaikoLabBackups/`, outside the `Songs` tree so the game does not discover backup folders as songs. A failed replacement restores the prior workspace and simulator files and retains new partial files under `_failed_builds`. Existing non-conflicting files in the simulator folder are left alone. Review the confirmation before replacing a chart.
+
+The wizard defaults to the `punk_gallop` profile rather than presenting a genre selector. Per-course source choices map to existing modes: Automatic, Drums, Balanced (hybrid), Vocals, and Guitar. In addition to density and source mode, the UI collects highway speed, big-note sensitivity, quiet-guitar threshold/treatment, Hard/Oni repeat variation, and a fill-roll cap for each course. Each slider resets independently to the legacy baseline: highway speed 101.343, big-note threshold 0.88, quiet-guitar threshold 0.25, density 100%, Hard/Oni repeat variation 0%, and roll caps 3/3/0/0. The Tkinter wizard's saved chart-control preferences were updated to these values. Values are remembered in ignored `configs/wizard_settings.json` and written into each song's `overrides.json`; the CLI applies those overrides during arrangement/export. Highway speed changes scroll only. Density is a cap and cannot add source events. Repeat variation only recolors eligible existing hits, and the current detector recognizes adjacent identical one-measure patterns rather than longer/non-adjacent phrases. Fill rolls are gameplay rolls, not MIDI drumroll transcription; no balloon-roll control is exposed. Source modes are available per course so removing genre selection does not remove its key source-following behavior.
+
+## Manual chart editor: readiness and next phase
+
+The browser UI in `src/taikolab/ui/static/` is already a useful editor foundation, not a blank prototype. `index.html` and `app.js` provide WaveSurfer music/stem playback, seek/loop controls, a scrolling Taiko lane, generated Don/Ka hitsounds, course selection, section controls, and per-note cycling/add/delete. The Python FastAPI backend in `src/taikolab/ui/server.py` loads `analysis.json`, runs the existing arranger, persists `note_edits` to `overrides.json`, and exports through the existing TJA writer. The current edit contract is grid-based (`difficulty:measure:slot`), which suits fine-tuning a decent automatic chart.
+
+Important gaps before calling this a complete charter: the browser currently receives only a count of detected drum hits, not their events, so it cannot draw the requested MIDI ghost-hit reference; empty-grid clicks add only Don; and the editor has no dedicated drag-to-move, undo/redo, or deliberate drumroll/balloon authoring workflow. The Python model and exporter cover Taiko note codes and timing, but edit validation and a richer editing contract are still needed for those operations. The browser playback already solves the difficult audio-preview requirement; rewriting WaveSurfer and the live lane in Tkinter would duplicate working behavior.
+
+Recommended next phase:
+
+1. Keep `analysis.json` immutable and make edits an explicit overlay on the auto chart. Add a read-only reference lane/toggle for MIDI-origin drum hits (kick/snare/tom class and original time), separate from the playable Taiko notes. Extend the Python response with only the event data the editor needs.
+2. Refine the existing grid editor: add all common note types, make add/cycle/delete actions obvious, and add undo/redo. Keep the first milestone focused on adjusting existing grid cells; do not make a full free-position chart authoring system yet.
+3. Keep music and reference hits synchronized with the existing WaveSurfer playhead and loop selection. Add a preview mix control for music, playable Taiko hitsounds, and optional ghost-hit clicks; do not alter source timing when changing chart notes.
+4. Save edits to the song's existing override file, show the auto baseline separately from edits, and allow rebuild/export without replacing the input analysis or MIDI. Add tests for edit persistence, note-code validation, reference-event serialization, and TJA output.
+5. Connect the Tkinter wizard to this editor with a **Fine-tune chart** action that opens the local editor for the selected song. Reuse the current browser UI and Python API first; evaluate embedding it in a WebView only if launching the local editor window feels too disconnected and the Windows WebView dependency can be reliably packaged.
+6. Add paired, validated roll/balloon authoring only after single-hit edits and undo/redo are stable; keep malformed or unclosed roll markers from reaching the TJA writer.
+
+This is ready to start as a focused manual-editor sprint because song loading, audio playback, grid rendering, manual note overrides, Python arrangement, and TJA export already exist. The key first design decision should be the ghost-hit presentation (overlay or separate lane); the underlying data should remain time-based and read-only.
+
+The input consolidation is reflected in the current tree: the six historical BYOB, Dumpweed, and Leaving Song MIDI/GP reference files now live under their respective `workspace/<song>/sources/` folders. `incoming_midi/` is not used automatically by the build scripts; the user currently keeps several new MIDI inputs there for selection in the wizard. The original Hope and Kill the Poor MIDI files remain untouched in that folder. The Kill the Poor MIDI was copied to `workspace/dead-kennedys-kill-the-poor-auto/input.mid` by the wizard, aligned, and used for the chart described above. The historical GP files are preserved as references only; the working importer uses MIDI, not GP. `scripts/run_tab.ps1` now copies its selected MIDI to the song folder as `input.mid`; optional `-Audio` copies an audio source to a standardized `audio.<ext>` name before the import. If either normalized working file would be replaced with different content, the old copy is backed up under that song's `sources/` folder. `scripts/run_wizard.ps1` launches the new UI.
+
+Focused wizard tests live in `tests/test_song_wizard.py` and cover safe IDs, path normalization, source staging, preference overlay, local tag parsing, Audiometa request/response behavior, manifest contents, keyring use, and failed-replacement recovery. The six migrated historical source files were compared byte-for-byte with their original Git blobs. The desktop extra adds only `keyring` and `mutagen`; it has been installed in the repository `.venv`. The Tk window now opens at 920x1040 and has an 800x700 minimum size, with a scrollable content area for shorter screens. Ruff checks pass when excluding pre-existing RUF046/RUF015 findings in the arranger and test file. The full suite reports 49 passed and one unrelated pre-existing failure: `tests/test_tab_sync.py::test_isolated_drum_warp_tracks_smooth_drift` imports `_estimate_isolated_drum_warp`, which is not present in the unchanged `src/taikolab/ingest/tab_sync.py`. Do not attribute that failure to this fix.
 
 ## Gemini handoff: project map and workflow
 
@@ -12,19 +67,21 @@ This section is intended to give a fresh AI instance enough context to continue 
 
 ```text
 TaikoLab/
+|-- run_build.bat                   Double-click launcher for cached-analysis rebuilds
 |-- configs/
 |   |-- default_settings.yaml       Global offsets, tempo deadzone, highway speed, quiet-guitar threshold
+|   |-- wizard_settings.json       Ignored local Songs folder, picker folders, and chart-control defaults
 |   |-- hori_default.yaml           Course density, note gaps, roll ergonomics
 |   `-- presets/
+|       |-- taiko_auto.yaml          Optional general-purpose profile
 |       |-- punk_gallop.yaml        Punk chart-source and drum-mapping rules
 |       |-- alt_rock.yaml           Added for The Leaving Song Part II
 |       |-- mathcore.yaml
 |       `-- powerviolence.yaml
-|-- incoming_midi/
-|   |-- leavingsongpart2.mid        MIDI used by the importer
-|   `-- leavingsongpart2.gp         Reference only; importer does not parse GP
+|-- incoming_midi/                  Legacy/manual-selection folder with user-staged MIDI inputs
 |-- scripts/
 |   |-- run_tab.ps1                 MIDI import, audio alignment, arrangement, export
+|   |-- run_wizard.ps1              Launch the dark automatic-song wizard
 |   |-- run_analyze.ps1
 |   |-- run_build.ps1
 |   |-- run_tests.ps1
@@ -42,15 +99,19 @@ TaikoLab/
 |   |-- ui/server.py                UI arrangement/export path
 |   |-- cli.py                      CLI arrangement/export path
 |   |-- config.py                   Settings and preset models
+|   |-- metadata.py                 Local audio tags, Audiometa lookup, secure API-key access
+|   |-- song_setup.py               Safe IDs, Songs-folder normalization, input staging, manifest
+|   |-- ui/wizard.py                Tkinter song creation and build/export workflow
 |   `-- schemas.py
 |-- tests/
 |   |-- test_exporter_and_arranger.py
 |   |-- test_ingest_dsp_and_pipeline.py
 |   `-- test_tab_sync.py
 |-- workspace/
-|   |-- byob/                       Cached analysis and generated chart
-|   |-- dumpweed/                   Cached analysis, overrides, generated chart
+|   |-- byob/sources/               Historical MIDI and GP references
+|   |-- dumpweed/sources/           Historical MIDI and GP references
 |   `-- leavingsongpart2/
+|       |-- sources/                Historical MIDI and GP references
 |       |-- theleavingsongpart2.mp3
 |       |-- stems/{drums,vocals,bass,instruments}.wav
 |       |-- analysis.json
@@ -70,7 +131,7 @@ YataiDON-Windows/Songs/
 
 1. `scripts/run_tab.ps1` calls `taikolab.cli import-tab`.
 2. `discover_song_files` must return the actual full mix as `main_audio` and isolated files as `StemPaths`. The importer parses the `.mid`, aligns a synthesized MIDI guide to the full audio with SyncToolbox, and refines drum timing from `stems/drums.wav` when available.
-3. The aligned events, tempo regions, meter, audio filename, and stem paths are stored in `workspace/<song>/analysis.json`. `arrange_song` quantizes these events into courses using `configs/hori_default.yaml` and the selected genre preset.
+3. The aligned events, tempo regions, meter, audio filename, and stem paths are stored in `workspace/<song>/analysis.json`. `arrange_song` quantizes these events into courses using `configs/hori_default.yaml` and the configured preset (the wizard defaults to `punk_gallop`).
 4. `tja_writer.py` serializes continuous BPM/meter timing, `OFFSET`, `#SCROLL`, and note rows, then copies the TJA and `WAVE` file to `YataiDON-Windows/Songs/<song>/`.
 
 The MIDI is the chart-note and tempo source. Audio/stems position that MIDI on the recording; they do not supply a second set of chart notes. GP files are not consumed by the current importer, so never claim the GP was programmatically weighed against the MIDI.
@@ -129,7 +190,7 @@ The importer reads the MIDI through `mido`; it does not parse the `.gp` file dir
 
 This means the pipeline currently uses MIDI plus audio/stems, but there is no independent GP-versus-MIDI validation. A `.gp` file can still be used as a manual reference or exported to MIDI before import. Do not assume the undocumented Songsterr weighting/alignment method is reproduced.
 
-For The Leaving Song Part II, the MP3 is in `workspace/leavingsongpart2`; `incoming_midi` has both `leavingsongpart2.mid` and `leavingsongpart2.gp`. Demucs stems are generated and cached under `workspace/leavingsongpart2/stems`. The importer uses the MIDI, MP3-derived `audio_clean.wav`, and isolated drum stem; it still does not parse the GP directly.
+For The Leaving Song Part II, the MP3 is in `workspace/leavingsongpart2`; its historical `leavingsongpart2.mid` and `leavingsongpart2.gp` references are under `workspace/leavingsongpart2/sources/`. Demucs stems are generated and cached under `workspace/leavingsongpart2/stems`. The importer uses the MIDI, MP3-derived `audio_clean.wav`, and isolated drum stem; it still does not parse the GP directly.
 
 ## Click-overlay timing check
 
@@ -209,15 +270,67 @@ On the cached Dumpweed analysis, the variety test has 620 Hard notes (up from 61
 ## Validation and known issue
 
 - `tests/test_exporter_and_arranger.py`: 10 passed, including repeated-phrase variation, limited source-fill rolls, Easy rests, and the tempo-map regression tests.
-- Full suite: 29 passed, 1 failed. `test_isolated_drum_warp_tracks_smooth_drift` imports `_estimate_isolated_drum_warp`, which is absent from the current modified [tab_sync.py](./src/taikolab/ingest/tab_sync.py). This is a pre-existing alignment-test/source mismatch, unrelated to the timing serializer or chart-variation changes.
+- Focused timing/arranger regression run: 22 passed across `tests/test_tab_sync.py` and `tests/test_exporter_and_arranger.py`, including affine-warp selection, localized-fast-fill rejection, and partial-final-measure tempo/beat spacing.
+- Real-song checks used temporary directories and existing source audio/MIDI: Everlong improved from 738/1,050 to 998/1,050 kick/snare matches within 35 ms; Police Truck kept DTW and no longer has the false 174–184 BPM ending. All His Suits remains inconclusive at the quiet/no-drum tail.
+- Full suite: 53 passed. One existing Starlette/httpx deprecation warning was reported; no test failures.
 - The current scoped Ruff check passes with known baseline codes ignored. An unrestricted check reports pre-existing `I001`, `PLR1730`, `RUF015`, `RUF046`, `UP035`, and `F841` findings on unchanged lines.
 - `git diff --check` completed without whitespace errors. Git reported line-ending conversion warnings for modified files.
 - Existing local edits in [tab_sync.py](./src/taikolab/ingest/tab_sync.py) were preserved. The duplicate stem scan in [stem_loader.py](./src/taikolab/ingest/stem_loader.py) was removed because it caused this import to choose a stem as the full mix. The prior [hori_filter.py](./src/taikolab/arranger/hori_filter.py) edits were retained and extended surgically for source-supported rolls. Do not discard unrelated local edits while continuing.
 
+## Planning: repeated-phrase variety and MIDI preview
+
+This section records the user's 2026-11-19 playtest feedback and remaining design work. Fill-roll placement has since been tightened: candidates are source-supported late-measure fills, and a roll is skipped unless there is at least an eighth-note of clearance before the next regular note. The wizard now defaults to the earlier Punk Gallop roll behavior (up to three Easy/Normal fill rolls, zero Hard/Oni) and exposes per-course caps.
+
+### Confirmed observations
+
+- Fill-roll clearance is now checked against later regular notes, including notes in following measures; rejected fills remain individual Don/Ka hits. The detector still looks for at least five drum events within a short span, no inter-hit gap above 180 ms, and a run of at least three events from one drum source. It spaces selected rolls by four measures.
+- Legacy default caps are three Easy, three Normal, zero Hard, and zero Oni. The UI can explicitly raise or lower each course's cap; Hard/Oni roll insertion is therefore opt-in from the controls, apart from the existing blast/`chaos_roll` behavior.
+- Current MIDI drum mapping deliberately maps kick to Don and snare to Ka. That is a useful readable baseline, but the user wants occasional color inversions and other source-supported differences, especially in Hard and Oni.
+- Existing repeated-pattern detection is narrower than the user's idea of repeated song sections: it detects four or more adjacent measures with exactly identical one-measure drum signatures. It does not generally find a repeated four-bar phrase such as A-B-C-D followed later by A-B-C-D, or near-matching phrases elsewhere in the song.
+- Existing Hard/Oni differences are not guaranteed. The current extra variation is limited to ride-hit accents on detected repeated bars (Hard only varies a late repeated run; Oni uses a broader slot cycle). If the MIDI has no usable ride events or no exact repeated bars, both courses can remain very similar.
+- MIDI voice events are parsed, and the vocal mapper can create cadence patterns in sections configured to follow vocals. The current Hard drum-following path does not use vocal cadence as an independent phrase-variation layer. Any future vocal use should be a phrase-level cue, not a substitute for MIDI drum timing.
+
+### Everlong phrase-end drift and outro timing experiment
+
+Evidence now supports an alignment-map issue rather than a global offset issue for Everlong. Its source MIDI is a steady 158 BPM; the previous local DTW map matched 738 of 1,050 classified kick/snare events within 35 ms. A constrained affine candidate matched 998/1,050 (about 95%) and was selected only because it improved the score by more than the minimum required margin. The resulting analysis is a steady 158.02 BPM, including the final partial measure. Do not infer that every song should use an affine map: Police Truck's affine candidate did not beat its DTW match score and DTW remained selected.
+
+Police Truck's source MIDI ends with 92 BPM bars; its late rapid snare cluster is too localized to represent a whole-bar tempo doubling. The previous cached analysis emitted 174.88 and 183.69 BPM at the end. Double-time detection now runs on raw MIDI timing and requires at least seven consecutive short gaps spanning at least half the bar. The new isolated validation retained an 84.33 BPM section from 133.1–138.7 seconds and a 91.64 BPM final section through the 144.97-second audio end; the false 174–184 BPM jump is gone.
+
+The same validation found that a partial final measure was being assigned a false high BPM because its duration was clipped to the audio end before tempo calculation. The importer now extrapolates the existing warp at the final measure boundary, computes tempo from the full mapped measure, and retains the original beat spacing while emitting only beats inside the audio. This also removed Everlong's spurious 173 BPM final-measure reading.
+
+All His Suits Are Torn remains a caution case: the MIDI is a constant 190 BPM and its last drum event is at 128.84 seconds, while the audio continues to about 138.4 seconds. The current timing run reports 79.1% kick/snare matches within 35 ms and no clear sustained slow-down in the final audio tail. Do not add chart notes or claim an outro tempo drop where the supplied MIDI has no drum events; use a click-overlay/playtest if the tail itself sounds slowed.
+
+The user clarified that the idea is a MIDI-only pipeline: render the supplied MIDI to an audio file, then use that rendered audio to identify drum hits and build the chart, with no original recording. This is feasible, but rendering and then re-detecting hits is not the best way to preserve exact MIDI timing. A synth render preserves the MIDI events; an audio transcriber then has to infer those same onsets again and may add attack, classification, or MP3 encoder-delay errors. If the desired source is the MIDI, parse its drum events and tempo map directly and send those events into the arranger. A synthesized audio render can still be produced in parallel as a listening preview or for a user to verify track selection and sound. Prefer WAV as the internal render; create an MP3 only as a convenient playback copy. Neither approach can make MIDI that is quantized or inaccurate relative to the recording match the original performance. The existing full-song audio/MIDI-alignment path remains the separate choice when the chart should follow the actual recording.
+
+### Recommended chart-variation design
+
+1. **Make roll endings safe before adding more rolls.** Use a time-based clearance check against the next regular note, including notes in the next measure. A reasonable first default to test is at least one eighth-note of empty space after the roll end marker. If that gap cannot be preserved without removing a meaningful MIDI hit, do not convert that fill to a roll; keep the individual Don/Ka hits instead. Keep roll counts low and favor fills near phrase endings, consistent with the user's preference for only a few rolls.
+2. **Detect repeated phrases, not only repeated bars.** Build rhythmic fingerprints for one-, two-, and four-measure windows from quantized MIDI events, preserving event class (kick/snare/tom/cymbal), position, and confidence. Compare phrases across the whole song, allowing small timing/velocity differences without treating unrelated riffs as identical. Mark the first phrase as the faithful reference and apply changes only on later repetitions.
+3. **Use a controlled, deterministic variation palette.** On selected repeats, preserve the key downbeats and the original event timing, then choose a bounded change such as inverting Don/Ka colors on offbeats or a short subphrase, accenting actual ride/crash events, using MIDI double-snare/ghost-note patterns, or replacing a genuine end-of-phrase drum fill with a short roll. Avoid inventing a second Ka for a single snare hit unless there is supporting MIDI evidence or a deliberately approved style rule. Use a stable seed derived from the song/phrase so rerunning a build does not reshuffle the chart.
+4. **Give Hard and Oni separate design targets.** Hard should stay close to the source groove and use a small number of clear, phrase-level variations. Oni should deliberately get more variants on eligible repeats—such as an additional color inversion, a source-supported double, or a more detailed fill—while respecting its NPS/gap limits. Do not just add random notes to force a count difference. Regression tests should prove that Oni is meaningfully different from Hard when repeated material supports it, that Hard retains the core motif, that unaffected measures remain unchanged, and that both courses keep identical timing grids.
+5. **Use vocals carefully.** Existing vocal onsets can help identify phrase starts/ends, call-and-response gaps, or an accent opportunity in Oni. Treat them as a low-weight structural cue and retain MIDI drums as the primary source. Dense vocal syllables should not automatically become extra drum notes.
+
+### Tabs/GP and audio-only boundaries
+
+The current importer parses MIDI, not Guitar Pro (`.gp`) files. The MIDI already provides the principal drum events and timing; audio/stem analysis is primarily used to align those events and refine timing. Given the user's experience that audio-only charting usually fails, keep it as a fallback rather than the primary punk/alt-rock path.
+
+Reintroducing GP/tab input is feasible as an optional enrichment path, particularly for identifying drum-track fills or phrase-end patterns that are missing from a MIDI. It should not silently override the chosen MIDI: first identify and validate the drum track, convert its events to the same timeline, compare it with MIDI and audio alignment, and report conflicts. The usefulness depends on the quality and format/version of each GP file, so this is a follow-up after phrase detection on MIDI has been evaluated. The location/interface of the user's existing browser custom charter is not established in this workspace; keep it as an edge-case/manual fallback for now, and assess an integration adapter only after the automatic path is stronger.
+
+### MIDI-only chart and audio render (`--auto-midi`)
+
+The user is considering a MIDI-only workflow: select a MIDI file, render its tracks to audio without the original song, and use that render to detect the drum hits for charting. This can produce a listenable MIDI-instrument rendition, but the chart should use the MIDI event data directly rather than transcribing the render back into note events. The MIDI already has the exact authored note positions, tempo map, and (where supplied) time signatures; audio onset detection would only estimate them again and can lose precision. A new MIDI-only chart path would bypass audio/MIDI DTW and feed the parsed drum events and MIDI timing directly into the arranger. The render is a companion preview to hear the selected tracks and arrangement, not the timing source.
+
+MIDI contains instructions and timing, not instrument audio. TaikoLab currently synthesizes only a lightweight tone guide inside `tab_sync.py` for alignment; it does not provide a full General MIDI playback renderer. A usable rendition would need a local synthesizer and a legally redistributable or user-provided General MIDI soundfont; do not extract or depend on Songsterr's sounds. Render to WAV internally to avoid MP3 encoder-delay/priming ambiguity, and optionally make an MP3 playback copy. This mode will follow the MIDI's authored timing, which may not match the recorded performance if the MIDI is quantized or inaccurate. Keep it separate from the existing audio-aligned `-auto` workflow, which is the mode intended to follow a supplied recording. Decide whether `--auto-midi` labels the chart, preview, or both before implementation.
+
+The user owns FL Studio 2026 and asked whether its sounds can supply the renderer. Image-Line's [DirectWave manual](https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/plugins/DirectWave.htm) says the full DirectWave version imports SoundFont2 (`.sf2`), while DirectWave Player is limited to DirectWave formats; full DirectWave availability depends on edition/purchase. Do not assume the user's installation includes an `.sf2` file. A possible general-purpose GM candidate to evaluate is [GeneralUser GS](https://www.schristiancollins.com/generaluser.php), from its author; it is a broad GM set rather than a dedicated rock-only bank. Test its overdriven/distortion guitar, bass, and drum-kit patches against a sample MIDI, and confirm the archive's license before bundling or redistributing it. [FluidSynth](https://www.fluidsynth.org/wiki/Download/) is a separate synthesizer with documented Windows support and could be evaluated for a local automated renderer.
+
 ## Suggested next steps
 
-1. Play the rebuilt [LeavingsongPart2 chart](C:/!CODE/YataiDON-Windows/Songs/leavingsongpart2/leavingsongpart2.tja) in OpenTaiko, especially the first five measures on each course, and confirm the single downbeat per bar is easier to play.
-2. The [LeavingsongPart2 click reference](./workspace/leavingsongpart2/diagnostics/leavingsongpart2_click_reference_0ms.wav) remains available if timing needs another check. If it is off, note whether it is wrong at the start or drifts later; do not change the global offset to compensate for a tempo-map problem.
-3. After the intro is confirmed, pause chart work and gather the user's remaining requirements for the drop-a-song automatic build tool. That tool has not been started.
-4. Choose future song presets by style instead of assuming punk. Continue to keep MIDI/audio timing separate from genre-specific chart rules.
-5. Address the known `tab_sync.py` test/source mismatch before treating the full suite as green.
+1. Regenerate Everlong and Police Truck into backed-up workspace copies and playtest the new maps/clicks before promoting them. Do not alter the accepted global offset based on the old cached TJA outputs.
+2. Playtest the generated charts with the new controls, especially roll clearance, source selection, density, and Hard/Oni differences. Current roll placement requires late-measure source-supported fills and an eighth-note clearance.
+3. Extend repetition detection from adjacent identical single bars to repeated one-to-four-measure phrases using MIDI first. Test against the user's examples: Kill the Poor, Holiday in Cambodia, and Voyeur; retain BYOB and Slipknot's Eyeless as difficult-case checks rather than assuming one preset fits every song.
+4. Add deterministic, evidence-bounded variation in stages: selected Don/Ka inversions and actual MIDI-supported doubles/fills, then a stronger Oni variant policy than Hard. Confirm timing and measure grids do not change.
+5. Consider a separate local MIDI-only preview after choosing a synthesizer/soundfont and resolving its license/distribution approach. Keep it diagnostic and do not treat it as a replacement for audio/MIDI alignment.
+6. Revisit optional GP/tab enrichment only if MIDI phrase/fill detection is insufficient. Keep the existing browser charter as a manual edge-case tool until its location and integration format are known.
+7. Preserve audio-only mode as a fallback, not the default for songs with usable MIDI. Do not use global timing changes to compensate for chart-variation problems.
+8. Run the full suite before treating the timing implementation as complete; the focused timing and arranger tests currently pass.

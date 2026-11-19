@@ -7,5 +7,16 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-workspace/*
-!workspace/**/.gitkeep
+# Personal source audio/MIDI and generated song workspaces/charts
+/incoming_midi/
+/workspace/
+# Machine-specific editor and wizard settings
+/.vscode/
+configs/wizard_settings.json
+configs/wizard_settings.json.tmp
+# Local secrets and transient output
+.env
+.env.*
+!.env.example
+*.log
+*.tmp

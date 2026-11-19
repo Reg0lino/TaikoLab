@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from taikolab.arranger.hori_filter import apply_hori_ergonomics
 from taikolab.arranger.mapper_drums import PlacedCandidate, map_drum_hits
 from taikolab.arranger.mapper_fusion import apply_guitar_fusion
@@ -76,6 +78,61 @@ def _repeated_drum_runs(
             runs.append(list(range(start, end)))
         start = end
     return runs
+
+
+def _apply_repeated_phrase_color_variation(
+    candidates: dict[tuple[int, int], PlacedCandidate],
+    drum_candidates: dict[tuple[int, int], PlacedCandidate],
+    measure_count: int,
+    intensity: float,
+) -> dict[tuple[int, int], PlacedCandidate]:
+    if intensity <= 0.0:
+        return candidates
+
+    color_swaps = {
+        TaikoNote.DON.value: TaikoNote.KAT.value,
+        TaikoNote.KAT.value: TaikoNote.DON.value,
+        TaikoNote.BIG_DON.value: TaikoNote.BIG_KAT.value,
+        TaikoNote.BIG_KAT.value: TaikoNote.BIG_DON.value,
+    }
+    eligible: list[tuple[int, int]] = []
+    for run in _repeated_drum_runs(drum_candidates, measure_count):
+        for measure_idx in run[1:]:
+            for key, original in drum_candidates.items():
+                if (
+                    key[0] != measure_idx
+                    or key[1] == 0
+                    or not original.source.startswith("drum:")
+                ):
+                    continue
+                current = candidates.get(key)
+                if (
+                    current is not None
+                    and current.source.startswith("drum:")
+                    and current.note_type in color_swaps
+                ):
+                    eligible.append(key)
+
+    if not eligible:
+        return candidates
+
+    selected_count = min(len(eligible), round(len(eligible) * min(1.0, intensity)))
+    selected_count = max(1, selected_count)
+    if selected_count == len(eligible):
+        selected = eligible
+    elif selected_count == 1:
+        selected = [eligible[len(eligible) // 2]]
+    else:
+        selected = [
+            eligible[round(index * (len(eligible) - 1) / (selected_count - 1))]
+            for index in range(selected_count)
+        ]
+
+    varied = dict(candidates)
+    for key in selected:
+        candidate = varied[key]
+        varied[key] = replace(candidate, note_type=color_swaps[candidate.note_type])
+    return varied
 
 
 def _add_repeated_phrase_ride_accents(
@@ -184,6 +241,15 @@ def build_course(
     combined.update(vocal_cands)
 
     fused = apply_guitar_fusion(combined, guitar_events, slots, plans, cfg)
+    variation_intensity = 0.0
+    if overrides and difficulty in overrides.difficulty_overrides:
+        variation_intensity = overrides.difficulty_overrides[difficulty].phrase_variation or 0.0
+    fused = _apply_repeated_phrase_color_variation(
+        fused,
+        drum_cands,
+        len(slots),
+        variation_intensity,
+    )
     fused = _add_repeated_phrase_ride_accents(fused, drum_cands, drum_hits, slots, difficulty)
     measures = apply_hori_ergonomics(fused, slots, plans, cfg, difficulty)
 

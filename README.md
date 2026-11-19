@@ -10,6 +10,16 @@ Modular, 100% local Punk / Hardcore / Metal to OpenTaiko (`.tja`) chart generato
 ## Starter Scripts
 - `.\scripts\check_env.ps1` - Verify Python, TaikoLab package, and GTX 1080 CUDA
 - `.\scripts\run_tests.ps1` - Run test suite & architecture boundary checks
+- `.\scripts\run_wizard.ps1` - Open the dark desktop wizard to stage inputs and create/export an `-auto` chart
+- `.\run_build.bat [song-id]` - Rebuild a chart from its cached analysis; prompts for the workspace song ID if omitted
 - `.\scripts\run_analyze.ps1 -Song "byob"` - Analyze stems/audio into `analysis.json`
 - `.\scripts\run_build.ps1 -Song "byob"` - Build `.tja` from cached `analysis.json`
 - `.\scripts\run_ui.ps1` - Launch local Director's Console browser UI
+
+The desktop wizard stores each new song's selected audio, optional MIDI, analysis, stems, diagnostics, and TJA under one `workspace\<artist-title-auto>\` folder, using standardized `audio.<ext>` and `input.mid` working names. It remembers separate last-used folders for audio and MIDI; until a MIDI folder has been chosen, its picker starts in the remembered audio folder. `run_tab.ps1` follows the same per-song layout. The old `incoming_midi\` folder is no longer part of the build flow. GP files are not parsed in this version.
+
+The wizard defaults to the prior Punk Gallop charting behavior without showing a genre selector: vocals for Easy/Normal, drums for Hard, hybrid for Oni, and the original Punk Gallop drum mapping. Each slider has its own **Reset** button. Defaults are highway speed 101.343, big-note threshold 0.88, quiet-guitar threshold 0.25, 100% density for each course, no added repeat-color inversion, and fill-roll caps of 3/3/0/0 for Easy/Normal/Hard/Oni. Before building, you can adjust the source followed by each course (automatic, drums, balanced, vocals, or guitar), course density/roll caps, repeat variation, and quiet-intro treatment. These settings are saved per song and do not alter MIDI/audio alignment. Highway speed changes scroll only; source selection, density, rolls, and variation affect the chart arrangement. Simulator replacement backups are stored in `_TaikoLabBackups` beside (one folder above) the selected `Songs` folder, not inside it.
+
+The browser-based Director's Console is the existing manual chart editor. It already plays the song and stems, displays the waveform and chart lane, supports looping and hit sounds, and saves manual note edits through the Python API. Launch it with `.\scripts\run_ui.ps1`. The root `run_build.bat` is a convenience launcher for the cached-analysis build script; it does not import or analyze new audio/MIDI files.
+
+Install the wizard's metadata and secure-key dependencies with `.\.venv\Scripts\python.exe -m pip install -e ".[desktop]"`. The wizard can use Audiometa's free authenticated search API; its key is stored in the Windows credential store, and only artist/title search text is sent (never song files). If the API is unavailable, title and artist remain editable manual inputs.

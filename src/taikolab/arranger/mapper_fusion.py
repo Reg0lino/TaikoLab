@@ -46,7 +46,11 @@ def apply_guitar_fusion(
 
         bar_drum_count = sum(1 for (bm, _) in merged if bm == m_idx)
         if plan.follow_mode == "guitar" or bar_drum_count < 4:
-            note = TaikoNote.BIG_DON if (plan.enable_big_notes and ev.strength >= 0.85) else TaikoNote.DON
+            note = (
+                TaikoNote.BIG_DON
+                if plan.enable_big_notes and ev.strength >= cfg.preset.big_note_threshold
+                else TaikoNote.DON
+            )
             merged[key] = PlacedCandidate(
                 measure_idx=m_idx,
                 slot_idx=s_idx,
@@ -57,7 +61,7 @@ def apply_guitar_fusion(
             )
 
     for slot, plan in zip(slots, plans):
-        if not plan.low_energy_guitar:
+        if not plan.low_energy_guitar or plan.quiet_guitar_behavior != "downbeat":
             continue
         measure_idx = slot.measure_idx
         if any(m_idx == measure_idx for m_idx, _ in placed):

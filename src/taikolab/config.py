@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, Field
 
-from taikolab.schemas import DrumClass, FollowMode, TaikoTarget
+from taikolab.schemas import ChartControlSettings, DrumClass, FollowMode, TaikoTarget
 
 
 class GlobalSettings(BaseModel):
@@ -113,11 +114,56 @@ def _load_yaml(path: Path) -> dict:
     return data or {}
 
 
+def load_wizard_preferences(root_dir: Path) -> dict[str, object]:
+    """Load local desktop preferences without exposing them as global YAML settings."""
+    prefs_path = root_dir / "configs" / "wizard_settings.json"
+    if prefs_path.exists():
+        loaded = json.loads(prefs_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Wizard preferences must be a JSON object: {prefs_path}")
+        return loaded
+    return {}
+
+
+def save_wizard_preferences(
+    root_dir: Path,
+    opentaiko_songs_dir: str | None = None,
+    *,
+    last_audio_directory: str | None = None,
+    last_midi_directory: str | None = None,
+    chart_controls: dict[str, object] | None = None,
+) -> Path:
+    """Persist desktop-only settings without rewriting the commented YAML config."""
+    prefs_path = root_dir / "configs" / "wizard_settings.json"
+    prefs_path.parent.mkdir(parents=True, exist_ok=True)
+    preferences = load_wizard_preferences(root_dir)
+    if opentaiko_songs_dir is not None:
+        preferences["opentaiko_songs_dir"] = opentaiko_songs_dir
+    if last_audio_directory is not None:
+        preferences["last_audio_directory"] = last_audio_directory
+    if last_midi_directory is not None:
+        preferences["last_midi_directory"] = last_midi_directory
+    if chart_controls is not None:
+        controls = ChartControlSettings.model_validate(chart_controls)
+        preferences["chart_controls"] = controls.model_dump(exclude_none=True)
+
+    temp_path = prefs_path.with_suffix(".json.tmp")
+    temp_path.write_text(json.dumps(preferences, indent=2) + "\n", encoding="utf-8")
+    temp_path.replace(prefs_path)
+    return prefs_path
+
+
 def load_config(preset_name: str | None = None, root_dir: Path | None = None) -> AppConfig:
     root = find_project_root(root_dir)
     configs_dir = root / "configs"
 
     settings = GlobalSettings(**_load_yaml(configs_dir / "default_settings.yaml"))
+    preferences = load_wizard_preferences(root)
+    songs_dir = preferences.get("opentaiko_songs_dir")
+    if songs_dir is not None:
+        if not isinstance(songs_dir, str):
+            raise ValueError(f"opentaiko_songs_dir must be text: {configs_dir / 'wizard_settings.json'}")
+        settings.opentaiko_songs_dir = songs_dir
     hori = HoriProfile(**_load_yaml(configs_dir / "hori_default.yaml"))
 
     chosen_preset = preset_name or settings.default_preset

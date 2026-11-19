@@ -21,6 +21,8 @@ class MeasurePlan:
     min_gap_ms: float = 55.0
     is_blast_zone: bool = False
     low_energy_guitar: bool = False
+    quiet_guitar_behavior: str = "downbeat"
+    max_fill_rolls: int = 0
 
 
 def _default_mode_for_difficulty(difficulty: DifficultyLevel, cfg: AppConfig) -> FollowMode:
@@ -58,6 +60,21 @@ def build_measure_plans(
             base_mode = diff_ov.follow_mode
         if diff_ov.max_nps is not None:
             base_max_nps = diff_ov.max_nps
+        if diff_ov.density_scale is not None:
+            base_max_nps *= diff_ov.density_scale
+
+    max_fill_rolls = 3 if difficulty in ("easy", "normal") else 0
+    if overrides and difficulty in overrides.fill_rolls_by_course:
+        max_fill_rolls = overrides.fill_rolls_by_course[difficulty]
+    elif overrides and overrides.fill_rolls_per_course is not None:
+        max_fill_rolls = overrides.fill_rolls_per_course
+    quiet_guitar_threshold = cfg.settings.quiet_guitar_rms_threshold
+    quiet_guitar_behavior = "downbeat"
+    if overrides:
+        if overrides.quiet_guitar_rms_threshold is not None:
+            quiet_guitar_threshold = overrides.quiet_guitar_rms_threshold
+        if overrides.quiet_guitar_behavior is not None:
+            quiet_guitar_behavior = overrides.quiet_guitar_behavior
 
     plans: list[MeasurePlan] = []
     for s in slots:
@@ -86,7 +103,7 @@ def build_measure_plans(
             and not bar_drums
             and bool(guitar_energy)
             and any(value > 0.0 for value in guitar_energy)
-            and sum(guitar_energy) / len(guitar_energy) < cfg.settings.quiet_guitar_rms_threshold
+            and sum(guitar_energy) / len(guitar_energy) < quiet_guitar_threshold
         )
 
         drum_nps = len(bar_drums) / dur
@@ -140,6 +157,8 @@ def build_measure_plans(
                 min_gap_ms=base_min_gap_ms,
                 is_blast_zone=is_blast,
                 low_energy_guitar=low_energy_guitar and mode in ("guitar", "hybrid"),
+                quiet_guitar_behavior=quiet_guitar_behavior,
+                max_fill_rolls=max_fill_rolls,
             )
         )
 

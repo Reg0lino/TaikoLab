@@ -64,6 +64,12 @@ def _cmd_arrange(args: argparse.Namespace) -> None:
         overrides = SongOverrides.model_validate_json(overrides_path.read_text(encoding="utf-8"))
         if overrides.preset and not args.preset:
             cfg = load_config(overrides.preset)
+        if overrides.target_highway_speed is not None:
+            cfg.settings.target_highway_speed = overrides.target_highway_speed
+        if overrides.big_note_threshold is not None:
+            cfg.preset.big_note_threshold = overrides.big_note_threshold
+        if overrides.quiet_guitar_rms_threshold is not None:
+            cfg.settings.quiet_guitar_rms_threshold = overrides.quiet_guitar_rms_threshold
 
     chart = arrange_song(analysis, cfg, overrides=overrides)
     tja_path = song_dir / f"{args.song}.tja"

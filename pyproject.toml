@@ -28,6 +28,10 @@ ui = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
 ]
+desktop = [
+    "keyring>=25.0,<26.0",
+    "mutagen>=1.47,<2.0",
+]
 tab = [
     "ApolloTab",
     "pretty_midi",
@@ -40,6 +44,7 @@ dev = [
 
 [project.scripts]
 taikolab = "taikolab.cli:main"
+taikolab-wizard = "taikolab.ui.wizard:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

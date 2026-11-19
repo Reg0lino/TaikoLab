@@ -136,9 +136,33 @@ class DifficultyRuleOverride(BaseModel):
     follow_mode: FollowMode | None = None
     max_nps: float | None = Field(default=None, gt=0.5, le=30.0)
     star_rating: int | None = Field(default=None, ge=1, le=12)
+    density_scale: float | None = Field(default=None, ge=0.5, le=1.5)
+    phrase_variation: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
-class SongOverrides(BaseModel):
+class ChartControlSettings(BaseModel):
+    target_highway_speed: float | None = Field(default=None, ge=70.0, le=160.0)
+    big_note_threshold: float | None = Field(default=None, ge=0.6, le=0.98)
+    quiet_guitar_rms_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    quiet_guitar_behavior: Literal["downbeat", "empty"] | None = None
+    fill_rolls_by_course: dict[DifficultyLevel, int] = Field(default_factory=dict)
+    # Read older saved settings that used one cap for every course.
+    fill_rolls_per_course: int | None = Field(default=None, ge=0, le=3)
+    difficulty_overrides: dict[DifficultyLevel, DifficultyRuleOverride] = Field(
+        default_factory=dict
+    )
+
+    @model_validator(mode="after")
+    def _validate_course_roll_caps(self) -> ChartControlSettings:
+        for difficulty, cap in self.fill_rolls_by_course.items():
+            if not 0 <= cap <= 3:
+                raise ValueError(
+                    f"Fill-roll cap for {difficulty} must be between 0 and 3"
+                )
+        return self
+
+
+class SongOverrides(ChartControlSettings):
     schema_version: str = "1.0"
     song_id: str
     title: str | None = None
@@ -147,12 +171,6 @@ class SongOverrides(BaseModel):
     global_offset_ms: float | None = None
     tempo_anchors: list[TempoAnchor] = Field(default_factory=list)
     sections: list[SectionOverride] = Field(default_factory=list)
-    difficulty_overrides: dict[DifficultyLevel, DifficultyRuleOverride] = Field(
-        default_factory=dict
-    )
-    note_edits: dict[str, int] = Field(default_factory=dict)
-    custom_downbeats: list[DownbeatMarker] = Field(default_factory=list)
-    tap_latency_ms: float = Field(default=0.0, ge=-250.0, le=250.0)
     note_edits: dict[str, int] = Field(default_factory=dict)
     custom_downbeats: list[DownbeatMarker] = Field(default_factory=list)
     tap_latency_ms: float = Field(default=0.0, ge=-250.0, le=250.0)

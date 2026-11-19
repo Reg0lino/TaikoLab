@@ -263,6 +263,211 @@ def _synthesize_midi_guide(
     return y
 
 
+def _count_monotonic_onset_matches(
+    expected_times: np.ndarray,
+    audio_times: np.ndarray,
+    tolerance_sec: float,
+) -> int:
+    return _score_monotonic_onset_matches(expected_times, audio_times, tolerance_sec)[0]
+
+
+def _score_monotonic_onset_matches(
+    expected_times: np.ndarray,
+    audio_times: np.ndarray,
+    tolerance_sec: float,
+) -> tuple[int, float]:
+    expected = np.sort(np.asarray(expected_times, dtype=np.float64))
+    actual = np.sort(np.asarray(audio_times, dtype=np.float64))
+    expected_idx = 0
+    actual_idx = 0
+    matches = 0
+    absolute_error = 0.0
+
+    while expected_idx < len(expected) and actual_idx < len(actual):
+        delta = actual[actual_idx] - expected[expected_idx]
+        if delta < -tolerance_sec:
+            actual_idx += 1
+        elif delta > tolerance_sec:
+            expected_idx += 1
+        else:
+            matches += 1
+            absolute_error += abs(float(delta))
+            expected_idx += 1
+            actual_idx += 1
+
+    return matches, absolute_error
+
+
+def _search_affine_drum_warp(
+    midi_time_groups: list[np.ndarray],
+    audio_time_groups: list[np.ndarray],
+    duration_sec: float,
+    anchor_midi_sec: float,
+    anchor_audio_sec: float,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    groups = [
+        (np.sort(np.asarray(midi_times, dtype=np.float64)), np.sort(np.asarray(audio_times, dtype=np.float64)))
+        for midi_times, audio_times in zip(midi_time_groups, audio_time_groups)
+        if len(midi_times) >= 4 and len(audio_times) >= 4
+    ]
+    initial_lag = anchor_audio_sec - anchor_midi_sec
+
+    def score(rate: float, lag: float) -> tuple[int, float]:
+        scores = [
+            _score_monotonic_onset_matches(
+                midi_times + lag + (rate - 1.0) * (midi_times - anchor_midi_sec),
+                audio_times,
+                tolerance_sec=0.060,
+            )
+            for midi_times, audio_times in groups
+        ]
+        return sum(matches for matches, _ in scores), sum(error for _, error in scores)
+
+    best_rate = 1.0
+    best_lag = initial_lag
+    best_score = -1
+    best_error = float("inf")
+
+    def consider(rate: float, lag: float) -> None:
+        nonlocal best_rate, best_lag, best_score, best_error
+        candidate_score, candidate_error = score(rate, lag)
+        if (
+            candidate_score > best_score
+            or (
+                candidate_score == best_score
+                and (
+                    candidate_error < best_error - 1e-9
+                    or (
+                        abs(candidate_error - best_error) <= 1e-9
+                        and (abs(rate - 1.0), abs(lag - initial_lag))
+                        < (abs(best_rate - 1.0), abs(best_lag - initial_lag))
+                    )
+                )
+            )
+        ):
+            best_rate = rate
+            best_lag = lag
+            best_score = candidate_score
+            best_error = candidate_error
+
+    for rate in np.arange(0.90, 1.1001, 0.002):
+        for lag in np.arange(initial_lag - 0.25, initial_lag + 0.2501, 0.01):
+            consider(float(rate), float(lag))
+
+    coarse_rate = best_rate
+    coarse_lag = best_lag
+    for rate in np.arange(max(0.90, coarse_rate - 0.002), min(1.10, coarse_rate + 0.0021), 0.0001):
+        for lag in np.arange(coarse_lag - 0.01, coarse_lag + 0.0101, 0.001):
+            consider(float(rate), float(lag))
+
+    end_time = max(float(duration_sec), 0.1)
+    knots_m = np.array([0.0, end_time], dtype=np.float64)
+    knots_a = knots_m + best_lag + (best_rate - 1.0) * (knots_m - anchor_midi_sec)
+    return knots_m, knots_a, best_rate
+
+
+def _estimate_isolated_drum_warp(
+    midi_times: np.ndarray,
+    audio_times: np.ndarray,
+    duration_sec: float,
+    first_note_t: float,
+    first_aud_transient: float,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Estimate a smooth drum-to-audio clock from corresponding onset sequences."""
+    return _search_affine_drum_warp(
+        [np.asarray(midi_times, dtype=np.float64)],
+        [np.asarray(audio_times, dtype=np.float64)],
+        duration_sec=duration_sec,
+        anchor_midi_sec=first_note_t,
+        anchor_audio_sec=first_aud_transient,
+    )
+
+
+def _estimate_classified_drum_warp(
+    midi_drums: list[DrumHit],
+    real_drums: list[DrumHit],
+    duration_sec: float,
+    anchor_midi_sec: float,
+    anchor_audio_sec: float,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    classes = ("kick", "snare")
+    midi_groups = [
+        np.array([h.time_sec for h in midi_drums if h.drum_class == drum_class], dtype=np.float64)
+        for drum_class in classes
+    ]
+    audio_groups = [
+        np.array([h.time_sec for h in real_drums if h.drum_class == drum_class], dtype=np.float64)
+        for drum_class in classes
+    ]
+    return _search_affine_drum_warp(
+        midi_groups,
+        audio_groups,
+        duration_sec=duration_sec,
+        anchor_midi_sec=anchor_midi_sec,
+        anchor_audio_sec=anchor_audio_sec,
+    )
+
+
+def _score_drum_warp(
+    midi_drums: list[DrumHit],
+    real_drums: list[DrumHit],
+    knots_m: np.ndarray,
+    knots_a: np.ndarray,
+    tolerance_sec: float = 0.035,
+) -> tuple[int, int]:
+    matches = 0
+    total = 0
+    for drum_class in ("kick", "snare"):
+        midi_times = np.array(
+            sorted(h.time_sec for h in midi_drums if h.drum_class == drum_class),
+            dtype=np.float64,
+        )
+        audio_times = np.array(
+            sorted(h.time_sec for h in real_drums if h.drum_class == drum_class),
+            dtype=np.float64,
+        )
+        if not len(midi_times):
+            continue
+        expected = np.interp(midi_times, knots_m, knots_a)
+        matches += _count_monotonic_onset_matches(expected, audio_times, tolerance_sec)
+        total += len(midi_times)
+    return matches, total
+
+
+def _select_drum_alignment_warp(
+    midi_drums: list[DrumHit],
+    real_drums: list[DrumHit],
+    duration_sec: float,
+    dtw_knots_m: np.ndarray,
+    dtw_knots_a: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int, int, float | None]:
+    current_matches, total_hits = _score_drum_warp(
+        midi_drums,
+        real_drums,
+        dtw_knots_m,
+        dtw_knots_a,
+    )
+    if total_hits < 30:
+        return dtw_knots_m, dtw_knots_a, current_matches, total_hits, None
+
+    anchor_midi_sec = min(
+        h.time_sec for h in midi_drums if h.drum_class in ("kick", "snare")
+    )
+    anchor_audio_sec = float(np.interp(anchor_midi_sec, dtw_knots_m, dtw_knots_a))
+    affine_m, affine_a, affine_rate = _estimate_classified_drum_warp(
+        midi_drums,
+        real_drums,
+        duration_sec=duration_sec,
+        anchor_midi_sec=anchor_midi_sec,
+        anchor_audio_sec=anchor_audio_sec,
+    )
+    affine_matches, _ = _score_drum_warp(midi_drums, real_drums, affine_m, affine_a)
+    required_improvement = max(12, int(np.ceil(total_hits * 0.05)))
+    if affine_matches >= current_matches + required_improvement:
+        return affine_m, affine_a, affine_matches, total_hits, affine_rate
+    return dtw_knots_m, dtw_knots_a, current_matches, total_hits, None
+
+
 def _align_via_synctoolbox(
     audio_path: Path,
     synth_guide: list[tuple[float, float, int, bool]],
@@ -374,6 +579,21 @@ def _align_via_synctoolbox(
         match_pct = 100.0 * float(np.mean(np.minimum(d1, d0) <= 0.035))
         print(f"[TaikoLab TabSync] DTW + Drum Snap locked {match_pct:.1f}% of all Kick/Snare hits within +/-35ms!")
 
+    dtw_matches, total_hits = _score_drum_warp(midi_drums, real_drums, knots_m, knots_a)
+    knots_m, knots_a, selected_matches, total_hits, affine_rate = _select_drum_alignment_warp(
+        midi_drums,
+        real_drums,
+        duration_sec,
+        knots_m,
+        knots_a,
+    )
+    if affine_rate is not None:
+        print(
+            "[TaikoLab TabSync] Replaced unstable DTW warp with drum-validated affine timing "
+            f"({dtw_matches}/{total_hits} -> {selected_matches}/{total_hits} hits within 35ms; "
+            f"rate {affine_rate:.5f})."
+        )
+
     return knots_m, knots_a
 
 
@@ -389,8 +609,29 @@ def _split_double_time_bars(
         if num == 4 and den == 4 and bpm < 130.0:
             bar_hits = [t for t in core_times if start - 0.01 <= t < end - 0.01]
             gaps = [bar_hits[i + 1] - bar_hits[i] for i in range(len(bar_hits) - 1)]
-            fast_gaps = [g for g in gaps if 0.035 <= g <= 0.105]
-            if len(bar_hits) >= 8 and len(fast_gaps) >= 3:
+            has_sustained_fast_run = False
+            run_start_idx: int | None = None
+            for gap_idx, gap in enumerate(gaps):
+                if 0.035 <= gap <= 0.105:
+                    if run_start_idx is None:
+                        run_start_idx = gap_idx
+                elif run_start_idx is not None:
+                    run_gaps = gap_idx - run_start_idx
+                    run_span = bar_hits[gap_idx] - bar_hits[run_start_idx]
+                    if run_gaps >= 7 and run_span >= (end - start) * 0.5:
+                        has_sustained_fast_run = True
+                    run_start_idx = None
+
+            if run_start_idx is not None:
+                run_gaps = len(gaps) - run_start_idx
+                run_span = bar_hits[-1] - bar_hits[run_start_idx]
+                if run_gaps >= 7 and run_span >= (end - start) * 0.5:
+                    has_sustained_fast_run = True
+
+            if (
+                len(bar_hits) >= 8
+                and has_sustained_fast_run
+            ):
                 mid = 0.5 * (start + end)
                 out.append((start, mid, min(360.0, bpm * 2.0), 4, 4))
                 out.append((mid, end, min(360.0, bpm * 2.0), 4, 4))
@@ -421,6 +662,7 @@ def import_midi_aligned(
         f"[TaikoLab TabSync] Parsed MIDI (pure mido): {len(bars)} bars | "
         f"{len(drums)} drums | {len(vocals)} vocals | {len(guitars)} guitar strokes"
     )
+    bars = _split_double_time_bars(bars, drums)
 
     if manual_offset_sec is not None:
         knots_m = np.array([0.0, duration], dtype=np.float64)
@@ -439,6 +681,12 @@ def import_midi_aligned(
         knots_m, knots_a = _align_via_synctoolbox(main_audio, synth_guide, drums, real_drums, duration)
 
     def warp(t: float) -> float:
+        if len(knots_m) > 1 and t < knots_m[0]:
+            slope = (knots_a[1] - knots_a[0]) / (knots_m[1] - knots_m[0])
+            return float(knots_a[0] + (t - knots_m[0]) * slope)
+        if len(knots_m) > 1 and t > knots_m[-1]:
+            slope = (knots_a[-1] - knots_a[-2]) / (knots_m[-1] - knots_m[-2])
+            return float(knots_a[-1] + (t - knots_m[-1]) * slope)
         return float(np.interp(t, knots_m, knots_a))
 
     warped_drums = [
@@ -457,29 +705,32 @@ def import_midi_aligned(
         if 0.0 <= (wt := warp(g.time_sec)) <= duration
     ]
 
-    warped_bars: list[tuple[float, float, float, int, int]] = []
+    warped_bars: list[tuple[float, float, float, int, int, float, float]] = []
     for s, e, _, num, den in bars:
-        ws = warp(s)
-        we = warp(e)
-        if we <= 0.05 or ws >= duration - 0.1:
+        warped_start = warp(s)
+        warped_end = warp(e)
+        if warped_end <= 0.05 or warped_start >= duration - 0.1:
             continue
+        warped_duration = warped_end - warped_start
+        ws = warped_start
+        we = warped_end
         if ws < 0.0:
             ws = 0.0
         we = min(duration, we)
-        if we - ws >= 0.30:
-            wbpm = max(30.0, min(360.0, 240.0 * num / (den * (we - ws))))
-            warped_bars.append((ws, we, wbpm, num, den))
-
-    warped_bars = _split_double_time_bars(warped_bars, warped_drums)
+        if we - ws >= 0.30 and warped_duration > 0.0:
+            wbpm = max(30.0, min(360.0, 240.0 * num / (den * warped_duration)))
+            warped_bars.append((ws, we, wbpm, num, den, warped_start, warped_duration))
 
     beats: list[BeatEvent] = []
     regions: list[TempoRegion] = []
-    for ws, we, wbpm, num, den in warped_bars:
+    for ws, we, wbpm, num, den, warped_start, warped_duration in warped_bars:
         beats.append(BeatEvent(time_sec=round(ws, 4), is_downbeat=True))
         n_beats = 2 if (num == 6 and den == 8) else num
-        step = (we - ws) / max(1, n_beats)
+        step = warped_duration / max(1, n_beats)
         for b in range(1, n_beats):
-            beats.append(BeatEvent(time_sec=round(ws + b * step, 4), is_downbeat=False))
+            beat_time = warped_start + b * step
+            if ws < beat_time < we:
+                beats.append(BeatEvent(time_sec=round(beat_time, 4), is_downbeat=False))
 
         if regions and regions[-1].numerator == num and regions[-1].denominator == den and abs(regions[-1].bpm - wbpm) <= 3.5:
             regions[-1].end_sec = round(we, 4)

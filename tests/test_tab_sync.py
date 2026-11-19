@@ -6,7 +6,7 @@ from taikolab.arranger.engine import arrange_song
 from taikolab.config import load_config
 from taikolab.exporters.diagnostics import analyze_course
 from taikolab.ingest.tab_sync import _parse_midi_unified, _split_double_time_bars
-from taikolab.schemas import BeatEvent, DrumHit, SongAnalysis, TempoRegion
+from taikolab.schemas import BeatEvent, DrumHit, SongAnalysis, StemPaths, TempoRegion
 
 
 def test_unified_mido_parser_skips_shaker_and_splits_double_time(tmp_path: Path):
@@ -70,6 +70,7 @@ def test_four_difficulty_ladder_scales_cleanly_for_hori():
 
 def test_isolated_drum_warp_tracks_smooth_drift():
     import numpy as np
+
     from taikolab.ingest.tab_sync import _estimate_isolated_drum_warp
 
     # Simulate 60s of 160 BPM beats where real audio drifts from +0.50s to +0.74s
@@ -81,3 +82,96 @@ def test_isolated_drum_warp_tracks_smooth_drift():
     assert rate >= 0.90
     warped = np.interp(m_ks, km, ka)
     assert float(np.median(np.abs(warped - r_ks))) < 0.015
+
+
+def test_drum_alignment_rejects_a_phase_slipped_dtw_warp():
+    import numpy as np
+
+    from taikolab.ingest.tab_sync import _score_drum_warp, _select_drum_alignment_warp
+
+    midi_drums = [
+        DrumHit(
+            time_sec=float(i * 0.5),
+            drum_class="kick" if i % 2 == 0 else "snare",
+            velocity=0.9,
+        )
+        for i in range(160)
+    ]
+    real_drums = [
+        DrumHit(
+            time_sec=0.2 + 1.001 * hit.time_sec,
+            drum_class=hit.drum_class,
+            velocity=0.9,
+        )
+        for hit in midi_drums
+    ]
+    dtw_knots_m = np.array([0.0, 20.0, 40.0, 80.0])
+    dtw_knots_a = np.array([0.2, 20.2, 40.6, 81.0])
+
+    old_matches, total = _score_drum_warp(midi_drums, real_drums, dtw_knots_m, dtw_knots_a)
+    knots_m, knots_a, new_matches, selected_total, rate = _select_drum_alignment_warp(
+        midi_drums,
+        real_drums,
+        82.0,
+        dtw_knots_m,
+        dtw_knots_a,
+    )
+
+    assert rate is not None
+    assert selected_total == total
+    assert new_matches >= old_matches + 12
+    assert abs(rate - 1.001) < 0.001
+    expected_times = np.array([0.2, 40.24, 79.7795])
+    actual_times = np.interp([0.0, 40.0, 79.5], knots_m, knots_a)
+    assert float(np.median(np.abs(actual_times - expected_times))) < 0.015
+
+
+def test_short_fast_fill_does_not_double_the_whole_measure():
+    from taikolab.ingest.tab_sync import _split_double_time_bars
+
+    bars = [(0.0, 2.5, 96.0, 4, 4)]
+    fill_hits = [
+        DrumHit(time_sec=1.30 + i * 0.08, drum_class="snare", velocity=0.9)
+        for i in range(10)
+    ]
+
+    assert _split_double_time_bars(bars, fill_hits) == bars
+
+
+def test_partial_final_bar_keeps_its_full_measure_tempo(tmp_path: Path, monkeypatch):
+    from taikolab.ingest import tab_sync
+
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+    midi_path = tmp_path / "input.mid"
+    midi_path.touch()
+    bars = [
+        (0.0, 2.5, 96.0, 4, 4),
+        (2.5, 5.0, 96.0, 4, 4),
+        (5.0, 7.5, 96.0, 4, 4),
+        (7.5, 10.0, 96.0, 4, 4),
+        (10.0, 12.5, 96.0, 4, 4),
+    ]
+    monkeypatch.setattr(
+        tab_sync,
+        "discover_song_files",
+        lambda _: (audio_path, StemPaths()),
+    )
+    monkeypatch.setattr(tab_sync, "get_audio_duration", lambda _: 11.25)
+    monkeypatch.setattr(
+        tab_sync,
+        "_parse_midi_unified",
+        lambda _: (bars, [], [], [], []),
+    )
+
+    analysis = tab_sync.import_midi_aligned(
+        song_id="partial-final-bar",
+        song_dir=tmp_path,
+        midi_path=midi_path,
+        manual_offset_sec=0.0,
+    )
+
+    assert analysis.tempo_regions[-1].bpm == 96.0
+    assert analysis.tempo_regions[-1].end_sec == 11.25
+    final_bar_beats = [beat.time_sec for beat in analysis.beats if beat.time_sec >= 10.0]
+    assert final_bar_beats == [10.0, 10.625]

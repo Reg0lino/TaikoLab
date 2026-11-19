@@ -10,7 +10,6 @@ from taikolab.arranger.section_builder import MeasurePlan
 from taikolab.config import AppConfig
 from taikolab.schemas import ChartMeasure, DifficultyLevel, TaikoNote
 
-_MAX_FILL_ROLLS_PER_COURSE = 3
 _MIN_ROLL_SPACING_MEASURES = 4
 
 
@@ -60,7 +59,12 @@ def _find_fill_roll_span(
             hit_count = end_idx - start_idx + 1
             span = end_time - start_time
             is_fill = longest_source_run >= 3
-            if hit_count < min_hits or span < min_duration_sec or not is_fill:
+            if (
+                hit_count < min_hits
+                or span < min_duration_sec
+                or not is_fill
+                or drum_events[end_idx][0] < int(slot.grid_size * 0.65)
+            ):
                 continue
 
             proposal = (hit_count, end_idx - start_idx, drum_events[start_idx][0], drum_events[end_idx][0])
@@ -108,7 +112,13 @@ def apply_hori_ergonomics(
                 active_streak = 0
 
     roll_candidates: list[tuple[int, tuple[int, int]]] = []
-    if difficulty in ("easy", "normal"):
+    roll_cap = max((plan.max_fill_rolls for plan in plans), default=0)
+    if roll_cap > 0:
+        candidate_times = sorted(
+            _slot_time(slots[m_idx], s_idx)
+            for m_idx, bar_dict in enumerate(by_measure)
+            for s_idx in bar_dict
+        )
         for m_idx, (slot, bar_dict) in enumerate(zip(slots, by_measure)):
             if m_idx in roll_measures or not bar_dict:
                 continue
@@ -118,18 +128,32 @@ def apply_hori_ergonomics(
                 cfg.hori.min_roll_duration_sec,
             )
             if span is not None:
+                roll_end_time = _slot_time(slot, span[1])
+                clearance_sec = 2.0 * (slot.end_sec - slot.start_sec) / slot.grid_size
+                next_note_time = next(
+                    (time for time in candidate_times if time > roll_end_time + 1e-6),
+                    None,
+                )
+                if (
+                    next_note_time is not None
+                    and next_note_time - roll_end_time < clearance_sec - 1e-6
+                ):
+                    continue
                 roll_candidates.append((m_idx, span))
 
     spaced_rolls: list[tuple[int, tuple[int, int]]] = []
     for candidate in roll_candidates:
         if not spaced_rolls or candidate[0] - spaced_rolls[-1][0] >= _MIN_ROLL_SPACING_MEASURES:
             spaced_rolls.append(candidate)
-    if len(spaced_rolls) > _MAX_FILL_ROLLS_PER_COURSE:
+    if len(spaced_rolls) > roll_cap:
         last_idx = len(spaced_rolls) - 1
-        selected_indices = [
-            round(i * last_idx / (_MAX_FILL_ROLLS_PER_COURSE - 1))
-            for i in range(_MAX_FILL_ROLLS_PER_COURSE)
-        ]
+        if roll_cap == 1:
+            selected_indices = [round(last_idx / 2)]
+        else:
+            selected_indices = [
+                round(i * last_idx / (roll_cap - 1))
+                for i in range(roll_cap)
+            ]
         spaced_rolls = [spaced_rolls[i] for i in selected_indices]
 
     fill_roll_spans = dict(spaced_rolls)
