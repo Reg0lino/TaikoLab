@@ -26,11 +26,10 @@
           <option value="mix">Full Mix</option>
         </select>
       </label>
-      <label>Preset
+      <label>Profile
         <select id="presetSelect">
           <option value="punk_gallop">punk_gallop</option>
-          <option value="mathcore">mathcore</option>
-          <option value="powerviolence">powerviolence</option>
+          <option value="alt_rock">alt_rock</option>
         </select>
       </label>
       <label>Course
@@ -41,11 +40,90 @@
           <option value="oni">Oni</option>
         </select>
       </label>
+      <button type="button" id="btnToggleChartControls" title="Show or hide chart speed, sensitivity, density, and repeat-variation sliders.">Chart Sliders</button>
       <button id="btnExport" class="btn-primary">Export to YataiDON</button>
     </div>
   </header>
 
   <main class="layout">
+    <!-- Collapsible Chart & Course Control Sliders -->
+    <section id="chartControlsCard" class="card chart-controls-card hidden">
+      <div class="chart-controls-header">
+        <strong>Chart &amp; Course Controls (<span id="lblCtrlCourseName">HARD</span>)</strong>
+        <span class="hint">Adjust highway speed, sensitivity, course density, repeat variation, and fill-roll caps live</span>
+      </div>
+      <div class="chart-controls-grid">
+        <div class="ctrl-item">
+          <label>Highway Speed (<span id="lblCtrlSpeed">101</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlHighwaySpeed" min="70" max="160" step="1" value="101.343" />
+              <button type="button" class="btn-xs" id="btnResetCtrlSpeed">Reset</button>
+            </div>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Big-Note Threshold (<span id="lblCtrlBig">0.88</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlBigNote" min="0.60" max="0.98" step="0.02" value="0.88" />
+              <button type="button" class="btn-xs" id="btnResetCtrlBig">Reset</button>
+            </div>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Quiet-Guitar Threshold (<span id="lblCtrlQuiet">0.25</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlQuietThreshold" min="0.10" max="0.80" step="0.05" value="0.25" />
+              <button type="button" class="btn-xs" id="btnResetCtrlQuiet">Reset</button>
+            </div>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Quiet Intro Treatment
+            <select id="ctrlQuietBehavior">
+              <option value="downbeat">One downbeat</option>
+              <option value="empty">Leave empty</option>
+            </select>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Course Source Mode
+            <select id="ctrlCourseFollow">
+              <option value="">Default (Profile)</option>
+              <option value="auto">Automatic</option>
+              <option value="drums">Drums</option>
+              <option value="hybrid">Balanced</option>
+              <option value="vocals">Vocals</option>
+              <option value="guitar">Guitar</option>
+            </select>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Course Max Density (<span id="lblCtrlDensity">100%</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlCourseDensity" min="50" max="150" step="5" value="100" />
+              <button type="button" class="btn-xs" id="btnResetCtrlDensity">Reset</button>
+            </div>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Repeat Color Variation (<span id="lblCtrlVariation">0%</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlCourseVariation" min="0" max="100" step="5" value="0" />
+              <button type="button" class="btn-xs" id="btnResetCtrlVariation">Reset</button>
+            </div>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Course Fill-Roll Cap (<span id="lblCtrlRolls">0</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlCourseRolls" min="0" max="3" step="1" value="0" />
+              <button type="button" class="btn-xs" id="btnResetCtrlRolls">Reset</button>
+            </div>
+          </label>
+        </div>
+      </div>
+    </section>
+
     <!-- Transport, Volume Mixers & Global Offset -->
     <section class="card transport-bar">
       <div class="transport-left">
@@ -124,10 +202,10 @@
       <div class="lane-header">
         <div>
           <strong>Real-Time Taiko Lane</strong>
-          <span class="hint">Drag to move &bull; Select a note and use the active tool to replace it &bull; Right-click/Delete removes a note</span>
+          <span class="hint">Drag empty lane to box-select &bull; Shift+Click toggles &bull; Drag notes or roll edges &bull; Wheel scrolls lane</span>
         </div>
         <div class="lane-tools">
-          <label title="Increase the horizontal time scale to edit a smaller passage; decrease it to see more of the song.">Zoom <input type="range" id="laneZoom" min="180" max="620" value="340" /></label>
+          <label title="Increase the horizontal time scale to edit a smaller passage; decrease it to see more of the song.">Lane Zoom <input type="range" id="laneZoom" min="180" max="620" value="340" /></label>
           <label class="inline-check" title="On: snap edits to the selected musical grid. Off: use a 1/64-measure placement grid; exported TJA still requires representable measure subdivisions.">
             <input type="checkbox" id="snapToggle" checked /> Snap
           </label>
@@ -141,63 +219,124 @@
               <option value="64">1/64</option>
             </select>
           </label>
-          <label title="Choose what a click on an empty position adds. Roll and balloon tools use click-drag to set their full span.">
-            Tool
-            <select id="editTool">
-              <option value="select" selected>Select</option>
-              <option value="1">Don</option>
-              <option value="2">Ka</option>
-              <option value="3">Big Don</option>
-              <option value="4">Big Ka</option>
-              <option value="5">Drumroll</option>
-              <option value="7">Balloon</option>
-            </select>
-          </label>
-          <label id="balloonCountControl" title="Required number of hits to clear a balloon. Applied to the selected course's balloon rolls.">
-            Balloon hits
-            <input id="balloonCount" type="number" min="1" max="1000" step="1" value="10" />
-          </label>
           <button id="btnUndo" title="Undo the most recent chart edit (Ctrl+Z).">Undo</button>
           <button id="btnRedo" title="Redo the last undone chart edit (Ctrl+Y).">Redo</button>
           <button id="btnHelp" title="Show the editing and playback keyboard shortcuts.">Shortcuts</button>
           <button id="btnResetEdits" title="Remove all manual edits for this course and restore its generated notes.">Reset Course</button>
         </div>
       </div>
+
+      <div class="tool-strip">
+        <div class="tool-palette" role="toolbar" aria-label="Chart editing tools">
+          <button type="button" class="tool-btn active" data-tool="select" title="Select, box-select, move notes/groups, or drag roll edges (A)">
+            <span class="tool-swatch swatch-select"></span>Select <span class="tool-key">A</span>
+          </button>
+          <button type="button" class="tool-btn" data-tool="grid" title="Click a barline to pin stretch anchor; drag any barline to warp grid & BPM with notes locked (G)">
+            <span class="tool-swatch swatch-grid"></span>Grid <span class="tool-key">G</span>
+          </button>
+          <button type="button" class="tool-btn" data-tool="1" title="Place or replace Don note (D)">
+            <span class="tool-swatch swatch-don"></span>Don <span class="tool-key">D</span>
+          </button>
+          <button type="button" class="tool-btn" data-tool="2" title="Place or replace Ka note (K)">
+            <span class="tool-swatch swatch-kat"></span>Ka <span class="tool-key">K</span>
+          </button>
+          <button type="button" class="tool-btn" data-tool="3" title="Place or replace Big Don note (Shift+D)">
+            <span class="tool-swatch swatch-big-don"></span>Big Don <span class="tool-key">&#8679;D</span>
+          </button>
+          <button type="button" class="tool-btn" data-tool="4" title="Place or replace Big Ka note (Shift+K)">
+            <span class="tool-swatch swatch-big-kat"></span>Big Ka <span class="tool-key">&#8679;K</span>
+          </button>
+          <button type="button" class="tool-btn" data-tool="5" title="Click-drag on the lane to draw a Drumroll (R)">
+            <span class="tool-swatch swatch-roll"></span>Roll <span class="tool-key">R</span>
+          </button>
+          <button type="button" class="tool-btn" data-tool="6" title="Click-drag on the lane to draw a Big Drumroll (Shift+R)">
+            <span class="tool-swatch swatch-big-roll"></span>Big Roll <span class="tool-key">&#8679;R</span>
+          </button>
+          <button type="button" class="tool-btn" data-tool="7" title="Click-drag on the lane to draw a Balloon (B)">
+            <span class="tool-swatch swatch-balloon"></span>Balloon <span class="tool-key">B</span>
+          </button>
+          <button type="button" class="tool-btn" data-tool="erase" title="Click a note or roll to delete it (E)">
+            <span class="tool-swatch swatch-erase"></span>Erase <span class="tool-key">E</span>
+          </button>
+        </div>
+
+        <div class="selection-bar">
+          <div id="gridControls" class="grid-controls hidden">
+            <span id="gridAnchorBadge" class="mono badge">Pin: none (click barline)</span>
+            <label class="inline-check" title="When dragging a barline, also shift all later barlines by the same amount instead of absorbing into the next bar (or hold Alt).">
+              <input type="checkbox" id="chkShiftFollowing" /> Shift following
+            </label>
+            <button type="button" id="btnStraightenGridRange" class="btn-accent" title="Straighten all bars between the pinned barline and the playhead (or across selected notes) to one steady BPM.">Straighten Range</button>
+            <button type="button" id="btnResetGrid" class="btn-warn" title="Restore original barlines & BPMs">Reset Grid</button>
+          </div>
+          <label id="balloonCountControl" class="balloon-control hidden" title="Required hits to clear the new or currently selected balloon.">
+            Balloon hits
+            <input id="balloonCount" type="number" min="1" max="1000" step="1" value="10" />
+          </label>
+          <span id="selectionBadge" class="mono badge">0 selected</span>
+          <button type="button" id="btnInchLeft" title="Move selected notes/rolls left by 1 active grid step ([ or Alt+Left)" disabled>&lsaquo; -1 Step</button>
+          <button type="button" id="btnInchRight" title="Move selected notes/rolls right by 1 active grid step (] or Alt+Right)" disabled>+1 Step &rsaquo;</button>
+          <button type="button" id="btnFlipSelection" title="Swap Don and Ka colors for the selected notes (F)" disabled>Flip Don/Ka</button>
+          <button type="button" id="btnCopySelection" title="Copy selected notes and rolls (Ctrl+C)" disabled>Copy</button>
+          <button type="button" id="btnPasteSelection" title="Paste copied notes and rolls at playhead (Ctrl+V)" disabled>Paste</button>
+          <button type="button" id="btnDeleteSelection" class="btn-danger" title="Delete all selected notes and rolls (Delete)" disabled>Delete</button>
+          <button type="button" id="btnClearSelection" title="Clear selection (Esc)" disabled>Clear</button>
+        </div>
+      </div>
+
       <div id="shortcutPanel" class="shortcut-panel hidden">
         <strong>Keyboard shortcuts</strong>
         <span><kbd>Space</kbd> Play / pause</span>
         <span><kbd>Ctrl</kbd>+<kbd>Z</kbd> Undo</span>
-        <span><kbd>Ctrl</kbd>+<kbd>Y</kbd> Redo</span>
-        <span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> Redo</span>
+        <span><kbd>Ctrl</kbd>+<kbd>Y</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> Redo</span>
         <span><kbd>Ctrl</kbd>+<kbd>S</kbd> Save and export</span>
-        <span><kbd>Delete</kbd> Delete selected note or roll</span>
-        <span><kbd>Left</kbd> / <kbd>Right</kbd> Seek 0.1 seconds</span>
-        <span><kbd>Shift</kbd>+<kbd>Left</kbd> / <kbd>Right</kbd> Seek 1 second</span>
+        <span><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd> Copy / Paste selection</span>
+        <span><kbd>Delete</kbd> Delete selected notes/rolls</span>
+        <span><kbd>[</kbd> / <kbd>]</kbd> or <kbd>Alt</kbd>+<kbd>Left</kbd>/<kbd>Right</kbd> Inch selection left/right 1 step</span>
+        <span><kbd>F</kbd> Flip Don &harr; Ka in selection</span>
+        <span><kbd>Left</kbd> / <kbd>Right</kbd> Seek 0.1s (<kbd>Shift</kbd> 1s)</span>
         <span><kbd>Home</kbd> / <kbd>End</kbd> Song start / end</span>
-        <span><kbd>+</kbd> / <kbd>-</kbd> Zoom in / out</span>
-        <span><kbd>Esc</kbd> Cancel the current selection or drag</span>
-        <span><kbd>A</kbd> Select &bull; <kbd>D</kbd> Don &bull; <kbd>K</kbd> Ka &bull; <kbd>R</kbd> Roll &bull; <kbd>B</kbd> Balloon</span>
-        <span><kbd>S</kbd> Toggle grid snap</span>
-        <span><kbd>Numpad 0</kbd> Record a downbeat while recording</span>
+        <span><kbd>+</kbd> / <kbd>-</kbd> or <kbd>Ctrl</kbd>+<kbd>Wheel</kbd> Lane zoom</span>
+        <span><kbd>Wheel</kbd> on lane: scroll horizontally</span>
+        <span><kbd>Esc</kbd> Clear selection or cancel drag</span>
+        <span><kbd>A</kbd> Select &bull; <kbd>G</kbd> Grid/Barlines &bull; <kbd>D</kbd> Don &bull; <kbd>K</kbd> Ka &bull; <kbd>Shift</kbd>+<kbd>D</kbd>/<kbd>K</kbd> Big Don/Ka</span>
+        <span><kbd>R</kbd> Roll &bull; <kbd>Shift</kbd>+<kbd>R</kbd> Big Roll &bull; <kbd>B</kbd> Balloon &bull; <kbd>E</kbd> Erase</span>
+        <span><kbd>S</kbd> Toggle grid snap &bull; <kbd>Numpad 0</kbd> Record downbeat</span>
         <span>Text fields keep their normal typing shortcuts.</span>
       </div>
       <canvas id="taikoCanvas" width="1600" height="260"></canvas>
+      <div class="lane-scroll-row">
+        <span class="label-sm">Chart Scroll</span>
+        <input type="range" id="laneScroll" min="0" max="1" step="0.01" value="0" title="Scrub or scroll horizontally through the chart." />
+      </div>
       <div id="diagBar" class="diag-bar mono"></div>
     </section>
 
     <!-- WaveSurfer Waveform + Regions + Downbeat Markers -->
     <section class="card wave-card">
-      <div id="waveform" title="Click or drag the waveform to seek. Gold lines are bar downbeats; colored blocks mark song sections."></div>
-      <div id="waveTimeline"></div>
-      <div class="hint" style="margin:6px 0 0 0">Gold lines = Downbeat Barlines (drag to adjust, double-click gold line to delete) &bull; Colored zones = Song Sections</div>
+      <div class="wave-header">
+        <strong>Audio Waveform &amp; Sections</strong>
+        <div class="wave-controls">
+          <label title="Zoom the waveform horizontally to inspect transients and place exact clicks.">Wave Zoom <input type="range" id="waveZoom" min="0" max="400" step="10" value="0" /></label>
+          <button type="button" id="btnWaveFit" title="Fit the entire song waveform into the window.">Fit</button>
+        </div>
+      </div>
+      <div id="waveform" title="Click anywhere to seek to that exact time. Shift+Click a section or gold barline to snap to its start."></div>
+      <div class="hint" style="margin:6px 0 0 0">Click = seek exact spot &bull; Shift+Click section/barline = snap to start &bull; Drag gold line = move barline &bull; Double-click gold line = delete</div>
     </section>
 
     <!-- Bottom Grid: Section List + Selected Section Inspector -->
     <section class="bottom-grid">
       <div class="card">
         <div class="section-list-header">
-          <strong>Song Sections</strong>
-          <span class="hint">Click a section to jump &amp; edit</span>
+          <div>
+            <strong>Song Sections</strong>
+            <span class="hint">Click to jump</span>
+          </div>
+          <div class="section-list-actions">
+            <button type="button" id="btnSplitAtPlayhead" class="btn-warn" title="Split the section at the nearest barline to the playhead.">Split Here</button>
+            <button type="button" id="btnSectionFromSel" title="Create a bar-aligned section spanning your currently selected notes or rolls.">From Selection</button>
+          </div>
         </div>
         <div id="sectionList" class="section-list"></div>
       </div>
@@ -229,6 +368,9 @@
               <button class="nudge-sec" data-ms="5">+5</button>
               <button class="nudge-sec" data-ms="20">+20</button>
             </div>
+          </label>
+          <label title="Optional constant target BPM for this section (blank = keep detected or tapped barlines).">Section BPM (blank = auto)
+            <input type="number" id="secBpm" min="30" max="380" step="0.5" placeholder="Auto" />
           </label>
           <label>BPM Multiplier
             <select id="secBpmMult">
@@ -262,6 +404,7 @@
             <label class="inline-check"><input type="checkbox" id="secFoldRolls" checked /> Fold Blasts to Rolls</label>
           </div>
           <div class="inspector-actions">
+            <button type="button" id="btnQuantizeSection" class="btn-warn" title="Straighten all barlines inside this section to one steady BPM while locking notes to their slots.">Straighten BPM</button>
             <button id="btnApplySection" class="btn-accent" title="Apply section settings and regenerate the section while keeping saved manual note edits.">Rebuild Section</button>
             <button id="btnDeleteSection" class="btn-danger">Merge With Previous</button>
           </div>

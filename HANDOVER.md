@@ -1,27 +1,48 @@
 # TaikoLab Handover
 
-Updated: 2026-11-20
+Updated: 2026-11-20 (Post Editor Sprints 1–5 + UTF-8 CLI Fix)
 
 ## Current status and next action
 
-The active work is the embedded manual editor, most recently the ability to open, edit, and save an existing `.tja` without rebuilding its song. That implementation is complete. The next step is for the user to test it and report any issues; do not start another feature sprint until they do.
+Editor UI Sprints 1–5 and the Windows UTF-8 child-process CLI fix are implemented and passing tests. The immediate next phase is **Pipeline & Arranger Optimization** (Sprints A, B, and C below) to make automatic charting accurate and musical across **80s Pop, New Wave, Pixies, Old Punk, and Skate Punk** (both MIDI-aligned and audio-only), before playtesting final charts.
 
-To test: close and relaunch with `run_app.bat`, choose **Open Manual Editor**, then **Open Existing TJA…**. Make a small edit and use **Save TJA**; confirm the selected chart changes and that its first-save backup (`<filename>.tja.bak`) exists. A neighboring audio file referenced by `WAVE` is used for preview when available. Imported sessions are in memory for the current app run, so select the chart again after restarting. The importer supports single-branch Taiko charts (Easy, Normal, Hard, Oni, Edit); branching charts are explicitly rejected.
+### Completed in Editor UI Sprints 1–5 + Bugfix
 
-The latest full test run passed **67 tests** on 2026-11-20, with one existing Starlette/httpx deprecation warning. Re-run it with `.\.venv\Scripts\python.exe -m pytest -q`. The focused editor lint and JavaScript syntax checks, and `git diff --check`, also passed. Audio playback and real-chart behavior still need the user's desktop playtest.
+- **UTF-8 child CLI fix (`wizard.py`, `cli.py`):** Forced `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8` on child `taikolab.cli` processes and `reconfigure(encoding="utf-8", errors="replace")` in `cli.py` so Unicode hyphens (`\u2010`, e.g. `blink‐182`) and symbols never crash `cp1252` stdout after alignment succeeds.
+- **Wizard/Console parity (`server.py`):** Default `sections` are populated when opening wizard-built `overrides.json` files (`sections=[]`), and `target_highway_speed`, `big_note_threshold`, and `quiet_guitar_rms_threshold` from `overrides.json` are applied during UI arrangement/export.
+- **Visual toolbox & smoother lane (`index.html`, `styles.css`, `app.js`):** Replaced tool `<select>` with visual palette buttons (`Select [A]`, `Grid [G]`, `Don [D]`, `Ka [K]`, `Big Don [Shift+D]`, `Big Ka [Shift+K]`, `Roll [R]`, `Big Roll [Shift+R]`, `Balloon [B]`, `Erase [E]`), fixed `Select` click so it never mutates/deletes notes, added roll/balloon edge resizing, fixed chronological balloon hit-count insertion and direct editing, added snap-grid ticks on canvas, and stopped WaveSurfer region flicker on note-only edits.
+- **Wave zoom, exact click, & scrollbars (`index.html`, `styles.css`, `app.js`):** Normal clicks on `#waveform` seek to the exact spot; `Shift+Click` snaps to section/barline start. Added `Wave Zoom` + `Fit` (with timeline mounted inside WaveSurfer's scroll container) and `Chart Scroll` (`#laneScroll`) + mouse-wheel horizontal scroll / `Ctrl+Wheel` zoom (also works on audio-less imported TJAs).
+- **Multi-select, Copy/Paste, & atomic nudging (`app.js`):** Box-drag marquee selection, `Shift+Click` toggle, `◀ -1 Step` / `+1 Step ▶` (`[` / `]` or `Alt+Left/Right`) with exact cross-measure rational stepping, `Flip Don/Ka` (`F`), `Copy`/`Paste` (`Ctrl+C`/`Ctrl+V`), and `Delete` with optimistic canvas updates + coalesced `rebuildChart`.
+- **Spacebar lock & Fluid Grid/Barline Warping (`schemas.py`, `quantizer.py`, `difficulty.py`, `engine.py`, `tja_editor.py`, `server.py`, `app.js`):**
+  - Capture-phase `Space` lock (`keydown` + `keyup`) strictly toggles Play/Pause without opening dropdowns or activating focused buttons.
+  - `Grid [G]` tool allows dragging single barlines or pinning an anchor barline (`[PIN]`) and stretching a phrase across bars (with optional `Shift following` / `Alt` drag) while **locking all notes to their beat slots**. Fixed `SectionOverride.offset_shift_ms` in `quantizer.py` + `difficulty.py` so section shifts move barlines and notes together.
+  - Imported `.tja` editing (`tja_editor.py`) now supports fluid `OFFSET`, `#BPMCHANGE`, and proportional `#SCROLL` updates while preserving untouched formatting/courses and `.tja.bak`.
+- **Bar-snapped sections, Section Quantize, & Console Chart Sliders (`quantizer.py`, `index.html`, `app.js`):**
+  - Added `Split Here` (bar-snapped), `From Selection`, bar-snapped WaveSurfer section edge dragging, `Straighten BPM` (Section Inspector), `Straighten Range` (`Grid` toolbar for both generated and imported TJAs), explicit `Section BPM` (`#secBpm`), and true `0.5x` merge / `2.0x` split in `quantizer.py`.
+  - Added collapsible `Chart Sliders` panel in Director's Console for live `Highway Speed`, `Big-Note Sensitivity`, `Quiet-Guitar Threshold/Treatment`, and per-course `Source Mode`, `Density`, `Repeat Color Variation`, and `Fill-Roll Cap`.
+
+### Planned Next Moves: Pipeline & Arranger Upgrade (Not Yet Coded)
+
+**Goal:** Accurate, musical automatic charting across **80s Pop, New Wave, Pixies, Old Punk, and Skate Punk** (both MIDI-aligned and audio-only). Note: re-running deterministic `ADTOF` / `Beat This!` twice does not change output; `.gp` parsing remains deferred because `.mid` already contains drum pitches.
+
+1. **Pipeline Sprint A — Speed Cap + Tom Pitch & Drum Fill Intelligence:**
+   - Raise `target_highway_speed` cap from `160` to `280` (`schemas.py`, `wizard.py`, `index.html`).
+   - Stop collapsing all MIDI/ADTOF toms (`41–50`) into `"tom": "don"`: preserve `high_tom` vs `low_tom` so fills alternate naturally (`Ka`/`Don`) instead of turning into Don walls (`tab_sync.py`, `drum_transcriber.py`, `mapper_drums.py`, presets).
+   - Upgrade `_find_fill_roll_span()` (`hori_filter.py`) to detect multi-drum phrase-end fills for **Rolls** and major energy build-ups for **Balloons** (`7`).
+2. **Pipeline Sprint B — Balanced-Favoring-Drums & 2/4-Bar Repeat Variation:**
+   - Move past rigid `vocals` vs `drums` silos so drums stay the rhythmic backbone while vocal/guitar hooks fill phrase pockets and reinforce chorus accents (`section_builder.py`, `mapper_fusion.py`).
+   - Replace 1-bar exact-match color flipping in `difficulty.py` with **2-bar & 4-bar phrase fingerprinting** + musical repeat variations (trailing `Ka-Ka` turnarounds, ride/cymbal lifts, fill embellishments) without randomly inverting Beat 1 kicks or Beat 2/4 snares.
+3. **Pipeline Sprint C — Ingest Accuracy (MIDI+Stems & Audio-Only):**
+   - Run/use cached Demucs stems (`stems/drums.wav`, `vocals.wav`, `instruments.wav`) during `import-tab` (`tab_sync.py`) so MIDI alignment snaps to isolated drums instead of noisy full-mix `ADTOF`, restoring `energy_curve` quiet-intro protection and stem audio preview in the editor. Tighten bar-level transient snap instead of over-blurring with a 5-second moving average.
+   - Add steady-BPM linear grid locking in `beat_tracker.py` / `quantizer.py` for click-steady 80s Pop / New Wave audio-only songs, plus tom/soft-fill DSP rescue in `drum_transcriber.py` / `drum_dsp.py`.
 
 ### First files to inspect
 
-- `src/taikolab/ui/wizard.py` — launches the editor, keeps it single-instance, and handles the native existing-chart picker.
-- `src/taikolab/ui/tja_editor.py` — parses TJA, overlays edits, preserves original text/commands, and saves with a backup.
-- `src/taikolab/ui/server.py` and `src/taikolab/ui/embedded_server.py` — imported-chart API/session and local server client.
-- `src/taikolab/ui/static/index.html`, `app.js`, and `styles.css` — editor interface, imported-chart state, and mode-specific controls.
-- `tests/test_tja_editor.py` and `tests/test_song_wizard.py` — import/edit/save behavior, wizard picker navigation, and editor lifecycle.
-- `run_app.bat` — desktop launcher; `run_build.bat` rebuilds from cached analysis and is not the app launcher.
-- `README.md` and this handover — launcher/editor usage and current project context.
-
-The working tree currently contains uncommitted local changes. Inspect `git status --short` before editing, preserve unrelated work, and do not reset or discard these changes.
-
+- `src/taikolab/ingest/tab_sync.py` & `drum_transcriber.py` & `beat_tracker.py` — MIDI tom pitch mapping, optional Demucs stem alignment, and steady-BPM grid locking.
+- `src/taikolab/arranger/mapper_drums.py`, `mapper_fusion.py`, `hori_filter.py`, `difficulty.py`, `section_builder.py` — fill patterning, balloons, balanced layering, and 2/4-bar phrase variation.
+- `src/taikolab/ui/static/index.html`, `app.js`, `styles.css` — Director's Console editor UI.
+- `src/taikolab/ui/tja_editor.py`, `server.py`, `wizard.py` — imported-TJA fluid timing/note editing and desktop wizard.
+- `run_app.bat` — desktop launcher.
 ## Automatic charting context (background)
 
 Dumpweed timing was playtested and accepted; its separate variety test was judged good enough for now. The Leaving Song Part II uses the alt-rock profile and shared highway speed; its quiet-guitar intro safeguard was added and the user confirmed the result works well.

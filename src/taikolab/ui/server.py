@@ -306,6 +306,8 @@ def _build_chart_payload(song_id: str, overrides: SongOverrides | None = None, e
     if overrides is None:
         if overrides_path.exists():
             overrides = SongOverrides.model_validate_json(overrides_path.read_text(encoding="utf-8"))
+            if not overrides.sections:
+                overrides.sections = _default_sections_from_analysis(analysis)
         else:
             overrides = SongOverrides(
                 song_id=song_id,
@@ -319,6 +321,12 @@ def _build_chart_payload(song_id: str, overrides: SongOverrides | None = None, e
         overrides_path.write_text(overrides.model_dump_json(indent=2), encoding="utf-8")
 
     cfg = load_config(overrides.preset or cfg.preset.name)
+    if overrides.target_highway_speed is not None:
+        cfg.settings.target_highway_speed = overrides.target_highway_speed
+    if overrides.big_note_threshold is not None:
+        cfg.preset.big_note_threshold = overrides.big_note_threshold
+    if overrides.quiet_guitar_rms_threshold is not None:
+        cfg.settings.quiet_guitar_rms_threshold = overrides.quiet_guitar_rms_threshold
     chart = arrange_song(analysis, cfg, overrides=overrides)
     for course in chart.courses:
         if course.difficulty in overrides.balloon_counts_by_course:
@@ -446,6 +454,8 @@ def create_app() -> FastAPI:
             song_id=import_id,
             title=document.chart.title,
             artist=document.chart.subtitle,
+            global_offset_ms=0.0,
+            barline_times=[],
             balloon_counts_by_course={
                 course.difficulty: course.balloon_counts
                 for course in document.chart.courses

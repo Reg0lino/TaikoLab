@@ -7,6 +7,7 @@
   --don: #f14a3b;
   --kat: #2ca8e8;
   --roll: #f5b935;
+  --balloon: #be68ec;
   --accent: #3ddc84;
 }
 * { box-sizing: border-box; }
@@ -19,7 +20,9 @@ body {
 }
 
 body.imported-tja .tap-bar,
-body.imported-tja .transport-right,
+body.imported-tja #btnSplitHere,
+body.imported-tja #btnToggleChartControls,
+body.imported-tja #chartControlsCard,
 body.imported-tja .bottom-grid {
   display: none;
 }
@@ -61,6 +64,7 @@ button {
   font-size: 12px;
 }
 button:hover { background: #313949; }
+button:disabled { opacity: 0.42; cursor: not-allowed; }
 .btn-primary { background: var(--kat); color: #09131a; border-color: var(--kat); font-weight: 700; }
 .btn-primary:hover { filter: brightness(1.1); }
 .btn-accent { background: var(--accent); color: #07190f; border-color: var(--accent); font-weight: 700; }
@@ -94,9 +98,90 @@ button:hover { background: #313949; }
 .tap-flash.active { opacity: 1; transition: none; }
 
 .lane-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 10px; flex-wrap: wrap; }
-.lane-tools { display: flex; align-items: center; gap: 10px; }
+.lane-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .lane-tools label { flex-direction: row; align-items: center; gap: 6px; }
-.lane-tools input[type="number"] { width: 68px; }
+.tool-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.tool-palette, .selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  background: #131720;
+  border: 1px solid #2e3646;
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.tool-btn:hover { background: #1f2634; border-color: #49566e; }
+.tool-btn.active {
+  background: #1d2c3f;
+  border-color: var(--kat);
+  box-shadow: 0 0 0 1px rgba(44, 168, 232, 0.35);
+}
+.tool-key {
+  font-size: 10px;
+  color: var(--muted);
+  background: #1f2531;
+  border: 1px solid #353f52;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.tool-swatch { display: inline-block; flex-shrink: 0; }
+.swatch-select {
+  width: 10px;
+  height: 10px;
+  border-left: 2px solid #edf1f7;
+  border-top: 2px solid #edf1f7;
+  transform: rotate(-15deg);
+}
+.swatch-don { width: 11px; height: 11px; border-radius: 50%; background: var(--don); border: 1.5px solid #fff; }
+.swatch-kat { width: 11px; height: 11px; border-radius: 50%; background: var(--kat); border: 1.5px solid #fff; }
+.swatch-big-don { width: 15px; height: 15px; border-radius: 50%; background: var(--don); border: 2px solid #fff; }
+.swatch-big-kat { width: 15px; height: 15px; border-radius: 50%; background: var(--kat); border: 2px solid #fff; }
+.swatch-roll { width: 16px; height: 9px; border-radius: 4px; background: var(--roll); }
+.swatch-big-roll { width: 18px; height: 13px; border-radius: 5px; background: var(--roll); border: 1.5px solid #fff; }
+.swatch-balloon { width: 14px; height: 11px; border-radius: 6px; background: var(--balloon); border: 1.5px solid #fff; }
+.swatch-grid {
+  width: 12px;
+  height: 12px;
+  border-left: 2px solid #ffd06b;
+  border-right: 2px solid #ffd06b;
+  background: linear-gradient(to bottom, transparent 42%, #ffd06b 42%, #ffd06b 58%, transparent 58%);
+}
+.swatch-erase {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: #712c31;
+  border: 1.5px solid #ff8e96;
+}
+.grid-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.balloon-control {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px;
+}
+.balloon-control input[type="number"] { width: 68px; }
 .hint { color: var(--muted); font-size: 11px; margin-left: 8px; }
 #taikoCanvas {
   width: 100%;
@@ -105,8 +190,56 @@ button:hover { background: #313949; }
   border: 1px solid var(--border);
   border-radius: 6px;
   display: block;
-  cursor: crosshair;
+  cursor: default;
   touch-action: none;
+}
+.lane-scroll-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.lane-scroll-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--kat);
+  cursor: pointer;
+}
+.wave-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.wave-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wave-controls label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+#waveform ::part(scroll) {
+  scrollbar-color: #485468 #0f1217;
+  scrollbar-width: auto;
+}
+#waveform ::part(scroll)::-webkit-scrollbar {
+  height: 12px;
+}
+#waveform ::part(scroll)::-webkit-scrollbar-track {
+  background: #0f1217;
+  border-radius: 6px;
+}
+#waveform ::part(scroll)::-webkit-scrollbar-thumb {
+  background: #3d485c;
+  border-radius: 6px;
+  border: 2px solid #0f1217;
+}
+#waveform ::part(scroll)::-webkit-scrollbar-thumb:hover {
+  background: #55647e;
 }
 .shortcut-panel {
   display: flex;
@@ -139,6 +272,8 @@ kbd {
   .lane-header { align-items: flex-start; }
 }
 
+.section-list-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.section-list-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .section-list { display: flex; flex-direction: column; gap: 5px; max-height: 290px; overflow-y: auto; margin-top: 8px; }
 .section-item {
   padding: 7px 10px;
@@ -167,3 +302,31 @@ kbd {
   padding: 10px 16px; border-radius: 6px; font-weight: 600; z-index: 999;
 }
 .toast.hidden { display: none; }
+.chart-controls-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.chart-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 14px;
+}
+.ctrl-item label {
+  width: 100%;
+}
+.ctrl-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ctrl-row input[type="range"] {
+  flex: 1;
+}
+.btn-xs {
+  padding: 3px 7px;
+  font-size: 11px;
+}

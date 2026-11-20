@@ -103,3 +103,27 @@ def test_tja_import_rejects_branching_charts(tmp_path: Path):
 
     assert response.status_code == 400
     assert "Branching TJA charts" in response.json()["detail"]
+def test_tja_editor_updates_bpmchange_and_offset_when_barlines_warped(tmp_path: Path):
+    path = tmp_path / "timing-edit.tja"
+    _write_tja(path)
+    document = load_tja(path)
+
+    overrides = SongOverrides(
+        song_id="imported",
+        barline_times=[0.0, 2.4, 4.0],
+        global_offset_ms=50.0,
+    )
+    chart = apply_tja_edits(document, overrides)
+    save_tja_edits(document, chart)
+
+    text = path.read_text(encoding="utf-8")
+    assert "OFFSET:-0.050" in text
+    assert "#BPMCHANGE 100.000" in text
+    assert "#BPMCHANGE 150.000" in text
+
+    reloaded = load_tja(path)
+    hard = reloaded.chart.courses[0]
+    assert hard.measures[0].start_sec == 0.05
+    assert round(hard.measures[0].bpm, 1) == 100.0
+    assert round(hard.measures[1].bpm, 1) == 150.0
+    assert hard.measures[0].notes[0] == TaikoNote.DON.value

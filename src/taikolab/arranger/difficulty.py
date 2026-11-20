@@ -43,13 +43,30 @@ def estimate_star_rating(difficulty: DifficultyLevel, measures: list[ChartMeasur
     return max(7, min(10, raw + 1))
 
 
-def _section_shift_at(t: float, overrides: SongOverrides | None) -> float:
-    if not overrides:
-        return 0.0
-    for sec in overrides.sections:
-        if sec.start_sec <= t < sec.end_sec and abs(sec.offset_shift_ms) > 0.01:
-            return sec.offset_shift_ms / 1000.0
-    return 0.0
+def _warp_time_between_slots(
+    time_sec: float,
+    base_slots: list[MeasureSlot],
+    warped_slots: list[MeasureSlot],
+) -> float:
+    if not base_slots or len(base_slots) != len(warped_slots):
+        return time_sec
+    if time_sec <= base_slots[0].start_sec:
+        return max(0.0, time_sec + (warped_slots[0].start_sec - base_slots[0].start_sec))
+    for base, warped in zip(base_slots, warped_slots):
+        if base.start_sec <= time_sec < base.end_sec:
+            base_dur = max(1e-6, base.end_sec - base.start_sec)
+            rel = (time_sec - base.start_sec) / base_dur
+            return warped.start_sec + rel * (warped.end_sec - warped.start_sec)
+    return max(0.0, time_sec + (warped_slots[-1].end_sec - base_slots[-1].end_sec))
+
+
+def _slots_differ(base_slots: list[MeasureSlot], warped_slots: list[MeasureSlot]) -> bool:
+    if len(base_slots) != len(warped_slots):
+        return False
+    return any(
+        abs(a.start_sec - b.start_sec) > 1e-6 or abs(a.end_sec - b.end_sec) > 1e-6
+        for a, b in zip(base_slots, warped_slots)
+    )
 
 
 def _repeated_drum_runs(
@@ -199,14 +216,15 @@ def build_course(
     difficulty: DifficultyLevel,
     cfg: AppConfig,
     overrides: SongOverrides | None = None,
+    base_slots: list[MeasureSlot] | None = None,
 ) -> ChartDifficulty:
-    plans = build_measure_plans(slots, analysis, difficulty, cfg, overrides)
+    source_slots = base_slots if base_slots is not None else slots
+    warped = _slots_differ(source_slots, slots)
 
-    has_shifts = bool(overrides and any(abs(s.offset_shift_ms) > 0.01 for s in overrides.sections))
-    if has_shifts:
+    if warped:
         drum_hits = [
             DrumHit(
-                time_sec=max(0.0, h.time_sec + _section_shift_at(h.time_sec, overrides)),
+                time_sec=_warp_time_between_slots(h.time_sec, source_slots, slots),
                 drum_class=h.drum_class,
                 velocity=h.velocity,
                 source=h.source,
@@ -215,7 +233,7 @@ def build_course(
         ]
         vocal_events = [
             OnsetEvent(
-                time_sec=max(0.0, v.time_sec + _section_shift_at(v.time_sec, overrides)),
+                time_sec=_warp_time_between_slots(v.time_sec, source_slots, slots),
                 strength=v.strength,
                 duration_sec=v.duration_sec,
                 pitch_hz=v.pitch_hz,
@@ -224,16 +242,31 @@ def build_course(
         ]
         guitar_events = [
             OnsetEvent(
-                time_sec=max(0.0, g.time_sec + _section_shift_at(g.time_sec, overrides)),
+                time_sec=_warp_time_between_slots(g.time_sec, source_slots, slots),
                 strength=g.strength,
                 duration_sec=g.duration_sec,
             )
             for g in analysis.guitar_events
         ]
+        energy_curve = [
+            e.model_copy(update={"time_sec": _warp_time_between_slots(e.time_sec, source_slots, slots)})
+            for e in analysis.energy_curve
+        ]
+        effective_analysis = analysis.model_copy(
+            update={
+                "drum_hits": drum_hits,
+                "vocal_events": vocal_events,
+                "guitar_events": guitar_events,
+                "energy_curve": energy_curve,
+            }
+        )
     else:
         drum_hits = analysis.drum_hits
         vocal_events = analysis.vocal_events
         guitar_events = analysis.guitar_events
+        effective_analysis = analysis
+
+    plans = build_measure_plans(slots, effective_analysis, difficulty, cfg, overrides)
 
     drum_cands = map_drum_hits(drum_hits, slots, plans, cfg)
     vocal_cands = map_vocal_cadence(vocal_events, drum_hits, slots, plans, cfg)

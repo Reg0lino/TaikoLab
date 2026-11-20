@@ -174,6 +174,7 @@ class SongOverrides(ChartControlSettings):
     note_edits: dict[str, int] = Field(default_factory=dict)
     balloon_counts_by_course: dict[DifficultyLevel, list[int]] = Field(default_factory=dict)
     custom_downbeats: list[DownbeatMarker] = Field(default_factory=list)
+    barline_times: list[float] = Field(default_factory=list)
     tap_latency_ms: float = Field(default=0.0, ge=-250.0, le=250.0)
 
     @model_validator(mode="after")
@@ -181,6 +182,14 @@ class SongOverrides(ChartControlSettings):
         for difficulty, counts in self.balloon_counts_by_course.items():
             if any(count < 1 or count > 1000 for count in counts):
                 raise ValueError(f"Balloon counts for {difficulty} must be between 1 and 1000")
+        if self.barline_times:
+            if len(self.barline_times) < 2:
+                raise ValueError("barline_times must contain at least 2 timestamps")
+            for idx, t in enumerate(self.barline_times):
+                if t < 0.0:
+                    raise ValueError("barline_times cannot be negative")
+                if idx > 0 and t <= self.barline_times[idx - 1]:
+                    raise ValueError("barline_times must be strictly increasing")
         return self
 
 

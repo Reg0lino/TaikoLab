@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from taikolab.arranger.engine import arrange_song
@@ -42,7 +43,14 @@ def _cmd_import_tab(args: argparse.Namespace) -> None:
     _cmd_arrange(args)
 
 
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def _cmd_arrange(args: argparse.Namespace) -> None:
+    _configure_utf8_stdio()
     cfg = load_config(args.preset)
     song_dir = cfg.song_dir(args.song)
     analysis_path = song_dir / "analysis.json"
@@ -112,6 +120,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    _configure_utf8_stdio()
     parser = argparse.ArgumentParser(prog="taikolab", description="TaikoLab Chart Generator")
     sub = parser.add_subparsers(dest="command", required=True)
 

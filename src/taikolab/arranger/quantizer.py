@@ -219,11 +219,230 @@ def _build_downbeat_spans(
     return spans
 
 
+def _apply_section_shifts_to_slots(
+    slots: list[MeasureSlot],
+    overrides: SongOverrides | None,
+) -> list[MeasureSlot]:
+    if not slots or not overrides:
+        return slots
+    if not any(abs(sec.offset_shift_ms) > 0.01 for sec in overrides.sections):
+        return slots
+
+    shifts = []
+    for slot in slots:
+        mid = 0.5 * (slot.start_sec + slot.end_sec)
+        sec = _active_section_at(mid, overrides)
+        shifts.append((sec.offset_shift_ms / 1000.0) if sec and abs(sec.offset_shift_ms) > 0.01 else 0.0)
+
+    barlines = [max(0.0, slots[0].start_sec + shifts[0])]
+    for i in range(1, len(slots)):
+        shift = shifts[i] if abs(shifts[i]) > 0.01 else shifts[i - 1]
+        barlines.append(max(barlines[-1] + 0.12, slots[i].start_sec + shift))
+    barlines.append(max(barlines[-1] + 0.12, slots[-1].end_sec + shifts[-1]))
+
+    out: list[MeasureSlot] = []
+    for i, slot in enumerate(slots):
+        start = barlines[i]
+        end = barlines[i + 1]
+        dur = max(0.12, end - start)
+        bpm = max(25.0, min(480.0, 240.0 * slot.numerator / (slot.denominator * dur)))
+        out.append(
+            MeasureSlot(
+                measure_idx=slot.measure_idx,
+                start_sec=start,
+                end_sec=end,
+                bpm=bpm,
+                numerator=slot.numerator,
+                denominator=slot.denominator,
+                grid_size=slot.grid_size,
+            )
+        )
+    return out
+
+
+def _apply_barline_times_to_slots(
+    slots: list[MeasureSlot],
+    overrides: SongOverrides | None,
+) -> list[MeasureSlot]:
+    if not slots or not overrides or len(overrides.barline_times) != len(slots) + 1:
+        return slots
+    times = overrides.barline_times
+    for i in range(len(slots)):
+        if times[i + 1] - times[i] < 0.12:
+            return slots
+    out: list[MeasureSlot] = []
+    for i, slot in enumerate(slots):
+        start = float(times[i])
+        end = float(times[i + 1])
+        dur = end - start
+        bpm = max(25.0, min(480.0, 240.0 * slot.numerator / (slot.denominator * dur)))
+        out.append(
+            MeasureSlot(
+                measure_idx=slot.measure_idx,
+                start_sec=start,
+                end_sec=end,
+                bpm=bpm,
+                numerator=slot.numerator,
+                denominator=slot.denominator,
+                grid_size=slot.grid_size,
+            )
+        )
+    return out
+
+
+def _apply_section_bpm_rules(
+    slots: list[MeasureSlot],
+    overrides: SongOverrides | None,
+) -> list[MeasureSlot]:
+    if not slots or not overrides or not overrides.sections:
+        return slots
+    needs_rule = any(
+        sec.bpm is not None or sec.bpm_multiplier >= 1.8 or sec.bpm_multiplier <= 0.6
+        for sec in overrides.sections
+    )
+    if not needs_rule:
+        return slots
+
+    out: list[MeasureSlot] = []
+    idx = 0
+    while idx < len(slots):
+        slot = slots[idx]
+        mid = 0.5 * (slot.start_sec + slot.end_sec)
+        sec = _active_section_at(mid, overrides)
+
+        if sec is not None and sec.bpm is not None:
+            group: list[MeasureSlot] = [slot]
+            j = idx + 1
+            while j < len(slots):
+                next_mid = 0.5 * (slots[j].start_sec + slots[j].end_sec)
+                if _active_section_at(next_mid, overrides) is sec:
+                    group.append(slots[j])
+                    j += 1
+                else:
+                    break
+            span_start = group[0].start_sec
+            span_end = group[-1].end_sec
+            span_dur = max(0.20, span_end - span_start)
+            num = sec.numerator if sec.numerator is not None else group[0].numerator
+            den = sec.denominator if sec.denominator is not None else group[0].denominator
+            target_bar_dur = max(0.18, 240.0 * num / (den * sec.bpm))
+            count = max(1, round(span_dur / target_bar_dur))
+            actual_dur = span_dur / count
+            actual_bpm = max(25.0, min(480.0, 240.0 * num / (den * actual_dur)))
+            grid = choose_grid_size(num, den, actual_bpm)
+            for k in range(count):
+                b_start = span_start + k * actual_dur
+                b_end = span_end if k == count - 1 else span_start + (k + 1) * actual_dur
+                out.append(
+                    MeasureSlot(
+                        measure_idx=len(out),
+                        start_sec=b_start,
+                        end_sec=b_end,
+                        bpm=actual_bpm,
+                        numerator=num,
+                        denominator=den,
+                        grid_size=grid,
+                    )
+                )
+            idx = j
+            continue
+
+        if sec is not None and sec.bpm_multiplier >= 1.8:
+            dur = slot.end_sec - slot.start_sec
+            if dur >= 0.40:
+                half_dur = dur * 0.5
+                mid_t = slot.start_sec + half_dur
+                half_bpm = max(25.0, min(480.0, 240.0 * slot.numerator / (slot.denominator * half_dur)))
+                grid = choose_grid_size(slot.numerator, slot.denominator, half_bpm)
+                out.append(
+                    MeasureSlot(
+                        measure_idx=len(out),
+                        start_sec=slot.start_sec,
+                        end_sec=mid_t,
+                        bpm=half_bpm,
+                        numerator=slot.numerator,
+                        denominator=slot.denominator,
+                        grid_size=grid,
+                    )
+                )
+                out.append(
+                    MeasureSlot(
+                        measure_idx=len(out),
+                        start_sec=mid_t,
+                        end_sec=slot.end_sec,
+                        bpm=half_bpm,
+                        numerator=slot.numerator,
+                        denominator=slot.denominator,
+                        grid_size=grid,
+                    )
+                )
+                idx += 1
+                continue
+
+        if sec is not None and sec.bpm_multiplier <= 0.6 and idx + 1 < len(slots):
+            nxt = slots[idx + 1]
+            nxt_mid = 0.5 * (nxt.start_sec + nxt.end_sec)
+            if _active_section_at(nxt_mid, overrides) is sec:
+                merged_dur = nxt.end_sec - slot.start_sec
+                merged_bpm = max(25.0, min(480.0, 240.0 * slot.numerator / (slot.denominator * merged_dur)))
+                grid = choose_grid_size(slot.numerator, slot.denominator, merged_bpm)
+                out.append(
+                    MeasureSlot(
+                        measure_idx=len(out),
+                        start_sec=slot.start_sec,
+                        end_sec=nxt.end_sec,
+                        bpm=merged_bpm,
+                        numerator=slot.numerator,
+                        denominator=slot.denominator,
+                        grid_size=grid,
+                    )
+                )
+                idx += 2
+                continue
+
+        real_dur = max(0.12, slot.end_sec - slot.start_sec)
+        real_bpm = max(25.0, min(480.0, 240.0 * slot.numerator / (slot.denominator * real_dur)))
+        out.append(
+            MeasureSlot(
+                measure_idx=len(out),
+                start_sec=slot.start_sec,
+                end_sec=slot.end_sec,
+                bpm=real_bpm,
+                numerator=slot.numerator,
+                denominator=slot.denominator,
+                grid_size=slot.grid_size,
+            )
+        )
+        idx += 1
+
+    return out
+
+
+def build_base_and_warped_slots(
+    analysis: SongAnalysis,
+    overrides: SongOverrides | None = None,
+) -> tuple[list[MeasureSlot], list[MeasureSlot]]:
+    """Return unwarped base slots and final slots after section shifts and barline warps."""
+    base = _build_unwarped_measure_slots(analysis, overrides)
+    base = _apply_section_bpm_rules(base, overrides)
+    warped = _apply_section_shifts_to_slots(base, overrides)
+    warped = _apply_barline_times_to_slots(warped, overrides)
+    return base, warped
+
+
 def build_measure_slots(
     analysis: SongAnalysis,
     overrides: SongOverrides | None = None,
 ) -> list[MeasureSlot]:
     """Build contiguous MeasureSlots: always trust score/section meter (never guess random 2/4/3/4)."""
+    _, warped = build_base_and_warped_slots(analysis, overrides)
+    return warped
+
+
+def _build_unwarped_measure_slots(
+    analysis: SongAnalysis,
+    overrides: SongOverrides | None = None,
+) -> list[MeasureSlot]:
     regions = sorted(analysis.tempo_regions, key=lambda r: r.start_sec)
 
     if overrides and len(overrides.custom_downbeats) >= 2:

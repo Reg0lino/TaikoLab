@@ -1,4 +1,4 @@
-"""Import and preserve existing TJA files while applying manual note edits."""
+"""Import and preserve existing TJA files while applying manual note and timing edits."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ _COURSES = {
     "oni": "oni",
     "edit": "ura",
 }
-_COURSE_NAMES = {value: key.title() for key, value in _COURSES.items()}
 _NOTE_ROW = re.compile(r"^(\s*)([0-8]*)(\s*,.*)$")
 _BALLOON_ROW = re.compile(r"^(\s*BALLOON\s*:\s*).*$", re.IGNORECASE)
+_OFFSET_ROW = re.compile(r"^(\s*OFFSET\s*:\s*).*$", re.IGNORECASE)
 
 
 @dataclass
@@ -34,6 +34,9 @@ class TjaDocument:
     rows: dict[tuple[str, int], tuple[int, str, str]]
     original_notes: dict[tuple[str, int], list[int]]
     balloon_rows: dict[str, tuple[int | None, int, list[int]]]
+    course_starts: dict[str, int]
+    offset_line: int | None
+    first_course_line: int
     audio_path: Path | None
 
 
@@ -58,12 +61,17 @@ def load_tja(path: Path) -> TjaDocument:
     trailing_newline = text.endswith(("\n", "\r"))
     lines = text.splitlines()
     header: dict[str, str] = {}
-    for line in lines:
+    offset_line: int | None = None
+    first_course_line = len(lines)
+    for line_idx, line in enumerate(lines):
         match = re.match(r"^\s*([A-Za-z_]+)\s*:(.*)$", line)
         if match:
             key = match.group(1).upper()
             if key == "COURSE":
+                first_course_line = line_idx
                 break
+            if key == "OFFSET":
+                offset_line = line_idx
             header[key] = match.group(2).strip()
 
     try:
@@ -83,6 +91,7 @@ def load_tja(path: Path) -> TjaDocument:
     rows: dict[tuple[str, int], tuple[int, str, str]] = {}
     original_notes: dict[tuple[str, int], list[int]] = {}
     balloon_rows: dict[str, tuple[int | None, int, list[int]]] = {}
+    course_starts: dict[str, int] = {}
     courses: list[ChartDifficulty] = []
     current_name: str | None = None
     current_diff: str | None = None
@@ -139,6 +148,7 @@ def load_tja(path: Path) -> TjaDocument:
                 raise ValueError(f"Missing or duplicate COURSE before line {line_index + 1}.")
             in_chart = True
             start_line = line_index
+            course_starts[current_diff] = line_index
             measures = []
             bpm = base_bpm
             numerator = denominator = 4
@@ -248,6 +258,9 @@ def load_tja(path: Path) -> TjaDocument:
         rows=rows,
         original_notes=original_notes,
         balloon_rows=balloon_rows,
+        course_starts=course_starts,
+        offset_line=offset_line,
+        first_course_line=first_course_line,
         audio_path=audio_path,
     )
 
@@ -255,6 +268,37 @@ def load_tja(path: Path) -> TjaDocument:
 def apply_tja_edits(document: TjaDocument, overrides: SongOverrides) -> TaikoChart:
     chart = document.chart.model_copy(deep=True)
     valid_codes = {note.value for note in TaikoNote}
+
+    if overrides.barline_times:
+        times = overrides.barline_times
+        for course in chart.courses:
+            if len(times) != len(course.measures) + 1:
+                continue
+            for idx, measure in enumerate(course.measures):
+                start = float(times[idx])
+                end = float(times[idx + 1])
+                dur = end - start
+                if dur < 0.12:
+                    raise ValueError(f"Measure {idx} duration is too short after barline edit.")
+                bpm = 240.0 * measure.numerator / (measure.denominator * dur)
+                if not 20.0 < bpm < 500.0:
+                    raise ValueError(f"Measure {idx} BPM ({bpm:.1f}) must stay between 20 and 500.")
+                measure.start_sec = start
+                measure.end_sec = end
+                measure.bpm = bpm
+        if chart.courses and chart.courses[0].measures:
+            chart.offset_sec = max(0.0, chart.courses[0].measures[0].start_sec)
+
+    delta_sec = (overrides.global_offset_ms or 0.0) / 1000.0
+    if abs(delta_sec) > 1e-6:
+        new_offset = max(0.0, chart.offset_sec + delta_sec)
+        actual_delta = new_offset - chart.offset_sec
+        chart.offset_sec = new_offset
+        for course in chart.courses:
+            for measure in course.measures:
+                measure.start_sec = max(0.0, measure.start_sec + actual_delta)
+                measure.end_sec = max(measure.start_sec + 0.12, measure.end_sec + actual_delta)
+
     for course in chart.courses:
         prefix = f"{course.difficulty}:"
         base_lengths = [len(measure.notes) for measure in course.measures]
@@ -321,34 +365,118 @@ def apply_tja_edits(document: TjaDocument, overrides: SongOverrides) -> TaikoCha
     return chart
 
 
+def _course_normalizes_scroll(measures: list[ChartMeasure]) -> float | None:
+    if not measures:
+        return None
+    products = [m.bpm * m.scroll for m in measures]
+    unique_scrolls = {round(m.scroll, 3) for m in measures}
+    if (len(unique_scrolls) > 1 and max(products) - min(products) < 2.0) or all(
+        abs(p - 101.343) < 2.0 for p in products
+    ):
+        return sum(products) / len(products)
+    return None
+
+
 def render_tja_edits(document: TjaDocument, chart: TaikoChart) -> bytes:
-    lines = list(document.lines)
-    inserts: list[tuple[int, str]] = []
+    replacements: dict[int, str] = {}
+    deletions: set[int] = set()
+    before_inserts: dict[int, list[str]] = {}
+
+    if abs(chart.offset_sec - document.chart.offset_sec) >= 0.0005:
+        tja_offset = -float(chart.offset_sec)
+        if round(tja_offset, 3) == 0.0:
+            tja_offset = 0.0
+        if document.offset_line is not None:
+            match = _OFFSET_ROW.match(document.lines[document.offset_line])
+            prefix = match.group(1) if match else "OFFSET:"
+            replacements[document.offset_line] = f"{prefix}{tja_offset:.3f}"
+        else:
+            before_inserts.setdefault(document.first_course_line, []).append(f"OFFSET:{tja_offset:.3f}")
+
+    orig_courses = {c.difficulty: c for c in document.chart.courses}
+
     for course in chart.courses:
+        orig_course = orig_courses.get(course.difficulty)
         for measure in course.measures:
             key = (course.difficulty, measure.measure_idx)
             if key not in document.rows or measure.notes == document.original_notes[key]:
                 continue
             line_index, prefix, suffix = document.rows[key]
-            lines[line_index] = f"{prefix}{''.join(str(note) for note in measure.notes)}{suffix}"
+            replacements[line_index] = f"{prefix}{''.join(str(note) for note in measure.notes)}{suffix}"
 
-        original_balloon = document.balloon_rows.get(
-            course.difficulty, (None, -1, [])
-        )
+        original_balloon = document.balloon_rows.get(course.difficulty, (None, -1, []))
         line_index, start_line, original_counts = original_balloon
-        if course.balloon_counts == original_counts:
-            continue
-        value = ",".join(str(count) for count in course.balloon_counts)
-        if line_index is not None:
-            match = _BALLOON_ROW.match(lines[line_index])
-            prefix = match.group(1) if match else "BALLOON:"
-            lines[line_index] = prefix + value
-        elif course.balloon_counts:
-            inserts.append((start_line, "BALLOON:" + value))
+        if course.balloon_counts != original_counts:
+            value = ",".join(str(count) for count in course.balloon_counts)
+            if line_index is not None:
+                match = _BALLOON_ROW.match(document.lines[line_index])
+                prefix = match.group(1) if match else "BALLOON:"
+                replacements[line_index] = prefix + value
+            elif course.balloon_counts:
+                before_inserts.setdefault(start_line, []).append("BALLOON:" + value)
 
-    for line_index, line in sorted(inserts, reverse=True):
-        lines.insert(line_index, line)
-    text = document.newline.join(lines)
+        if orig_course and len(orig_course.measures) == len(course.measures):
+            timing_changed = any(
+                abs(m.bpm - om.bpm) >= 0.002
+                for m, om in zip(course.measures, orig_course.measures)
+            )
+            if timing_changed:
+                target_speed = _course_normalizes_scroll(orig_course.measures)
+                active_bpm = chart.base_bpm
+                active_scroll = orig_course.measures[0].scroll if orig_course.measures else 0.5
+                prev_boundary = document.course_starts.get(course.difficulty, -1) + 1
+
+                for measure in course.measures:
+                    key = (course.difficulty, measure.measure_idx)
+                    if key not in document.rows:
+                        continue
+                    row_line = document.rows[key][0]
+                    slice_bpm_lines = [
+                        idx for idx in range(prev_boundary, row_line)
+                        if document.lines[idx].strip().upper().startswith("#BPMCHANGE")
+                    ]
+                    slice_scroll_lines = [
+                        idx for idx in range(prev_boundary, row_line)
+                        if document.lines[idx].strip().upper().startswith("#SCROLL")
+                    ]
+                    prev_boundary = row_line + 1
+
+                    desired_bpm = round(measure.bpm, 3)
+                    if abs(desired_bpm - active_bpm) >= 0.002:
+                        if slice_bpm_lines:
+                            for idx in slice_bpm_lines[:-1]:
+                                deletions.add(idx)
+                            replacements[slice_bpm_lines[-1]] = f"#BPMCHANGE {desired_bpm:.3f}"
+                        else:
+                            before_inserts.setdefault(row_line, []).append(f"#BPMCHANGE {desired_bpm:.3f}")
+                        active_bpm = desired_bpm
+                    elif slice_bpm_lines:
+                        for idx in slice_bpm_lines:
+                            deletions.add(idx)
+
+                    if target_speed is not None:
+                        desired_scroll = max(0.05, min(10.0, round(target_speed / active_bpm, 3)))
+                        if abs(desired_scroll - active_scroll) >= 0.001:
+                            if slice_scroll_lines:
+                                for idx in slice_scroll_lines[:-1]:
+                                    deletions.add(idx)
+                                replacements[slice_scroll_lines[-1]] = f"#SCROLL {desired_scroll:.3f}"
+                            else:
+                                before_inserts.setdefault(row_line, []).append(f"#SCROLL {desired_scroll:.3f}")
+                            active_scroll = desired_scroll
+                        elif slice_scroll_lines and measure.measure_idx > 0:
+                            for idx in slice_scroll_lines:
+                                deletions.add(idx)
+
+    out_lines: list[str] = []
+    for line_idx, orig_line in enumerate(document.lines):
+        if line_idx in before_inserts:
+            out_lines.extend(before_inserts[line_idx])
+        if line_idx in deletions:
+            continue
+        out_lines.append(replacements.get(line_idx, orig_line))
+
+    text = document.newline.join(out_lines)
     if document.trailing_newline:
         text += document.newline
     return text.encode(document.encoding)

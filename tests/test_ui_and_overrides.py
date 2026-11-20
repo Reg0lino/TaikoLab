@@ -112,3 +112,102 @@ def test_section_shift_and_manual_note_edits_api(tmp_path: Path, monkeypatch):
         json=invalid_balloon.model_dump(),
     )
     assert r_invalid.status_code == 422
+def test_wizard_overrides_populate_default_sections_and_apply_chart_controls(tmp_path: Path, monkeypatch):
+    song_dir = tmp_path / "wizard_song"
+    song_dir.mkdir()
+    sr = 22050
+    sf.write(str(song_dir / "audio.wav"), np.zeros(sr * 4, dtype=np.float32), sr)
+
+    analysis = SongAnalysis(
+        song_id="wizard_song",
+        title="Wizard Song",
+        artist="Tester",
+        audio_path="audio.wav",
+        duration_sec=4.0,
+        beats=[BeatEvent(time_sec=i * 0.5, is_downbeat=(i % 4 == 0)) for i in range(8)],
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=4.0, bpm=120.0, numerator=4, denominator=4)],
+        drum_hits=[DrumHit(time_sec=0.5, drum_class="kick", velocity=0.82, source="tab")],
+    )
+    (song_dir / "analysis.json").write_text(analysis.model_dump_json(), encoding="utf-8")
+
+    # Wizard writes overrides.json without sections and with custom slider settings
+    (song_dir / "overrides.json").write_text(
+        SongOverrides(
+            song_id="wizard_song",
+            preset="punk_gallop",
+            target_highway_speed=130.0,
+            big_note_threshold=0.70,
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    from taikolab import config as cfg_mod
+    real_load = cfg_mod.load_config
+
+    def fake_load(preset_name=None, root_dir=None):
+        c = real_load(preset_name, root_dir)
+        c.settings.workspace_dir = str(tmp_path)
+        return c
+
+    import taikolab.ui.server as srv_mod
+    monkeypatch.setattr(srv_mod, "load_config", fake_load)
+
+    client = TestClient(create_app())
+    r_get = client.get("/api/songs/wizard_song")
+    assert r_get.status_code == 200
+    payload = r_get.json()
+    assert len(payload["overrides"]["sections"]) >= 1
+    hard = next(c for c in payload["chart"]["courses"] if c["difficulty"] == "hard")
+    assert TaikoNote.BIG_DON.value in hard["measures"][0]["notes"]
+    tja_text = (song_dir / "wizard_song.tja").read_text(encoding="utf-8")
+    assert "#SCROLL 1.083" in tja_text
+def test_chart_control_sliders_persist_and_apply_through_ui_arrange(tmp_path: Path, monkeypatch):
+    song_dir = tmp_path / "slider_song"
+    song_dir.mkdir()
+    sr = 22050
+    sf.write(str(song_dir / "audio.wav"), np.zeros(sr * 4, dtype=np.float32), sr)
+
+    drums = []
+    for bar in range(8):
+        start = bar * 1.0
+        for b in range(4):
+            drums.append(DrumHit(time_sec=start + b * 0.25, drum_class="kick" if b % 2 == 0 else "snare", velocity=0.85))
+    analysis = SongAnalysis(
+        song_id="slider_song",
+        title="Slider Song",
+        artist="Tester",
+        audio_path="audio.wav",
+        duration_sec=8.0,
+        beats=[BeatEvent(time_sec=i * 0.25, is_downbeat=(i % 4 == 0)) for i in range(32)],
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=8.0, bpm=240.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    (song_dir / "analysis.json").write_text(analysis.model_dump_json(), encoding="utf-8")
+
+    from taikolab import config as cfg_mod
+    real_load = cfg_mod.load_config
+
+    def fake_load(preset_name=None, root_dir=None):
+        c = real_load(preset_name, root_dir)
+        c.settings.workspace_dir = str(tmp_path)
+        return c
+
+    import taikolab.ui.server as srv_mod
+    monkeypatch.setattr(srv_mod, "load_config", fake_load)
+
+    from taikolab.schemas import DifficultyRuleOverride
+    client = TestClient(create_app())
+    ov = SongOverrides(
+        song_id="slider_song",
+        preset="punk_gallop",
+        target_highway_speed=140.0,
+        difficulty_overrides={
+            "oni": DifficultyRuleOverride(follow_mode="drums", density_scale=0.5, phrase_variation=1.0),
+        },
+    )
+    r_arr = client.post("/api/songs/slider_song/arrange", json=ov.model_dump())
+    assert r_arr.status_code == 200
+    saved = SongOverrides.model_validate_json((song_dir / "overrides.json").read_text(encoding="utf-8"))
+    assert saved.target_highway_speed == 140.0
+    assert saved.difficulty_overrides["oni"].density_scale == 0.5
+    assert saved.difficulty_overrides["oni"].phrase_variation == 1.0

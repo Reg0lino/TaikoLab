@@ -478,3 +478,42 @@ def test_failed_replacement_restores_previous_workspace_and_simulator_files(monk
     assert failed_overrides.target_highway_speed == 120.0
     assert failed_overrides.difficulty_overrides["oni"].phrase_variation == 0.6
     assert any(event == "build_error" for event, _value in list(wizard.events.queue))
+def test_cli_arrange_handles_unicode_hyphen_on_cp1252_stdout(tmp_path: Path, monkeypatch):
+    import io
+    import types
+    import soundfile as sf
+    import numpy as np
+    from taikolab import cli as cli_mod
+    from taikolab.schemas import BeatEvent, DrumHit, SongAnalysis, TempoRegion
+
+    song_dir = tmp_path / "blink-unicode"
+    song_dir.mkdir()
+    sf.write(str(song_dir / "audio.wav"), np.zeros(22050 * 2, dtype=np.float32), 22050)
+    analysis = SongAnalysis(
+        song_id="blink-unicode",
+        title="Dumpweed",
+        artist="blink\u2010182",
+        audio_path="audio.wav",
+        duration_sec=2.0,
+        beats=[BeatEvent(time_sec=i * 0.5, is_downbeat=(i % 4 == 0)) for i in range(4)],
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=2.0, bpm=120.0, numerator=4, denominator=4)],
+        drum_hits=[DrumHit(time_sec=0.0, drum_class="kick", velocity=0.9)],
+    )
+    (song_dir / "analysis.json").write_text(analysis.model_dump_json(), encoding="utf-8")
+
+    real_load = cli_mod.load_config
+
+    def fake_load(preset_name=None, root_dir=None):
+        c = real_load(preset_name, root_dir)
+        c.settings.workspace_dir = str(tmp_path)
+        c.settings.opentaiko_songs_dir = ""
+        return c
+
+    monkeypatch.setattr(cli_mod, "load_config", fake_load)
+    raw_buf = io.BytesIO()
+    cp1252_stdout = io.TextIOWrapper(raw_buf, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(cli_mod.sys, "stdout", cp1252_stdout)
+
+    cli_mod._cmd_arrange(types.SimpleNamespace(song="blink-unicode", preset="punk_gallop"))
+    cp1252_stdout.flush()
+    assert (song_dir / "blink-unicode.tja").exists()

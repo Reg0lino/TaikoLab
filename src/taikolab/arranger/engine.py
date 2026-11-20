@@ -5,7 +5,7 @@ from __future__ import annotations
 import statistics
 
 from taikolab.arranger.difficulty import build_course
-from taikolab.arranger.quantizer import build_measure_slots
+from taikolab.arranger.quantizer import build_base_and_warped_slots
 from taikolab.config import AppConfig
 from taikolab.schemas import DifficultyLevel, SongAnalysis, SongOverrides, TaikoChart
 
@@ -17,11 +17,14 @@ def arrange_song(
     difficulties: tuple[DifficultyLevel, ...] = ("easy", "normal", "hard", "oni"),
 ) -> TaikoChart:
     """Convert cached SongAnalysis + optional overrides into a complete TaikoChart."""
-    slots = build_measure_slots(analysis, overrides)
+    base_slots, slots = build_base_and_warped_slots(analysis, overrides)
     if not slots:
         raise ValueError(f"Could not generate any measures for song '{analysis.song_id}'.")
 
-    courses = [build_course(analysis, slots, diff, cfg, overrides) for diff in difficulties]
+    courses = [
+        build_course(analysis, slots, diff, cfg, overrides, base_slots=base_slots)
+        for diff in difficulties
+    ]
 
     bpms = [s.bpm for s in slots]
     base_bpm = round(statistics.median(bpms), 3) if bpms else 140.0

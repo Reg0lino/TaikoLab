@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import shutil
 import subprocess
@@ -1068,9 +1069,13 @@ class TaikoWizard:
             self.events.put(("log", f"Staged MIDI: {staged_midi.name}" if staged_midi else "No MIDI selected; using local audio analysis."))
             self.events.put(("log", "Running TaikoLab build. No audio or MIDI is uploaded."))
 
+            env = dict(os.environ)
+            env["PYTHONUTF8"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
             process = subprocess.Popen(
                 command,
                 cwd=self.cfg.root_dir,
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

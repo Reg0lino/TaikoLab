@@ -20,6 +20,7 @@ from taikolab.schemas import (
     DrumHit,
     EnergyPoint,
     OnsetEvent,
+    SectionOverride,
     SongAnalysis,
     SongOverrides,
     TaikoChart,
@@ -740,3 +741,101 @@ def test_micro_downbeat_glitch_never_exceeds_bpm_limit():
     for c in chart.courses:
         for m in c.measures:
             assert 20.0 < m.bpm <= 480.0
+def test_barline_warp_locks_notes_to_beat_slots_and_updates_bpm():
+    cfg = load_config("punk_gallop")
+    beats = [BeatEvent(time_sec=i * 0.5, is_downbeat=(i % 4 == 0)) for i in range(8)]
+    drums = [
+        DrumHit(time_sec=0.0, drum_class="kick", velocity=0.9),
+        DrumHit(time_sec=1.0, drum_class="snare", velocity=0.9),
+        DrumHit(time_sec=2.0, drum_class="kick", velocity=0.9),
+        DrumHit(time_sec=3.0, drum_class="snare", velocity=0.9),
+    ]
+    analysis = SongAnalysis(
+        song_id="warp_lock",
+        title="Warp Lock",
+        audio_path="audio.wav",
+        duration_sec=4.0,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=4.0, bpm=120.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+
+    # Stretch bar 0 from 2.0s to 2.5s (96 BPM) and shrink bar 1 to 1.5s (160 BPM)
+    warped = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="warp_lock",
+            barline_times=[0.0, 2.5, 4.0],
+        ),
+    )
+    hard = next(c for c in warped.courses if c.difficulty == "hard")
+    assert hard.measures[0].bpm == pytest.approx(96.0, abs=0.1)
+    assert hard.measures[1].bpm == pytest.approx(160.0, abs=0.1)
+    # Beat 1 and Beat 3 stay locked to slot 0 and slot 8 in both measures
+    assert hard.measures[0].notes[0] == TaikoNote.DON.value
+    assert hard.measures[0].notes[8] == TaikoNote.KAT.value
+    assert hard.measures[1].notes[0] == TaikoNote.DON.value
+    assert hard.measures[1].notes[8] == TaikoNote.KAT.value
+def test_section_bpm_multiplier_splits_and_merges_measures():
+    cfg = load_config("punk_gallop")
+    beats = [BeatEvent(time_sec=i * 0.5, is_downbeat=(i % 4 == 0)) for i in range(8)]
+    analysis = SongAnalysis(
+        song_id="sec_mult",
+        title="Section Mult",
+        audio_path="audio.wav",
+        duration_sec=4.0,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=4.0, bpm=120.0, numerator=4, denominator=4)],
+        drum_hits=[DrumHit(time_sec=0.0, drum_class="kick", velocity=0.9)],
+    )
+
+    doubled = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sec_mult",
+            sections=[SectionOverride(start_sec=0.0, end_sec=4.0, bpm_multiplier=2.0)],
+        ),
+    )
+    hard_double = next(c for c in doubled.courses if c.difficulty == "hard")
+    assert len(hard_double.measures) == 4
+    assert hard_double.measures[0].bpm == pytest.approx(240.0, abs=0.5)
+
+    halved = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sec_mult",
+            sections=[SectionOverride(start_sec=0.0, end_sec=4.0, bpm_multiplier=0.5)],
+        ),
+    )
+    hard_half = next(c for c in halved.courses if c.difficulty == "hard")
+    assert len(hard_half.measures) == 1
+    assert hard_half.measures[0].bpm == pytest.approx(60.0, abs=0.5)
+
+
+def test_explicit_section_bpm_regrids_section_cleanly():
+    cfg = load_config("punk_gallop")
+    beats = [BeatEvent(time_sec=i * 0.5, is_downbeat=(i % 4 == 0)) for i in range(8)]
+    analysis = SongAnalysis(
+        song_id="sec_bpm",
+        title="Section BPM",
+        audio_path="audio.wav",
+        duration_sec=4.0,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=4.0, bpm=120.0, numerator=4, denominator=4)],
+        drum_hits=[DrumHit(time_sec=0.0, drum_class="kick", velocity=0.9)],
+    )
+
+    chart = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sec_bpm",
+            sections=[SectionOverride(start_sec=0.0, end_sec=4.0, bpm=240.0)],
+        ),
+    )
+    hard = next(c for c in chart.courses if c.difficulty == "hard")
+    assert len(hard.measures) == 4
+    assert all(m.bpm == pytest.approx(240.0, abs=0.5) for m in hard.measures)
