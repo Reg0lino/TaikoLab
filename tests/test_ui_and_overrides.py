@@ -4,7 +4,15 @@ import numpy as np
 import soundfile as sf
 from fastapi.testclient import TestClient
 
-from taikolab.schemas import BeatEvent, DrumHit, SectionOverride, SongAnalysis, SongOverrides, TaikoNote, TempoRegion
+from taikolab.schemas import (
+    BeatEvent,
+    DrumHit,
+    SectionOverride,
+    SongAnalysis,
+    SongOverrides,
+    TaikoNote,
+    TempoRegion,
+)
 from taikolab.ui.server import create_app
 
 
@@ -23,7 +31,7 @@ def test_section_shift_and_manual_note_edits_api(tmp_path: Path, monkeypatch):
         duration_sec=4.0,
         beats=[BeatEvent(time_sec=i * 0.5, is_downbeat=(i % 4 == 0)) for i in range(8)],
         tempo_regions=[TempoRegion(start_sec=0.0, end_sec=4.0, bpm=120.0, numerator=4, denominator=4)],
-        drum_hits=[DrumHit(time_sec=0.5, drum_class="kick", velocity=0.9)],
+        drum_hits=[DrumHit(time_sec=0.5, drum_class="kick", velocity=0.9, source="tab")],
     )
     (song_dir / "analysis.json").write_text(analysis.model_dump_json(), encoding="utf-8")
 
@@ -48,6 +56,9 @@ def test_section_shift_and_manual_note_edits_api(tmp_path: Path, monkeypatch):
     assert r_get.status_code == 200
     payload = r_get.json()
     assert len(payload["chart"]["courses"]) >= 3
+    assert payload["reference_hits"] == [
+        {"time_sec": 0.5, "drum_class": "kick", "velocity": 0.9}
+    ]
 
     # Test section shift + manual note edit survival through POST /arrange
     ov = SongOverrides(
@@ -60,3 +71,44 @@ def test_section_shift_and_manual_note_edits_api(tmp_path: Path, monkeypatch):
     assert r_arr.status_code == 200
     hard = [c for c in r_arr.json()["chart"]["courses"] if c["difficulty"] == "hard"][0]
     assert hard["measures"][0]["notes"][2] == TaikoNote.BIG_KAT.value
+
+    r_fine = client.post(
+        "/api/songs/ui_test_song/arrange",
+        json=SongOverrides(
+            song_id="ui_test_song",
+            preset="punk_gallop",
+            note_edits={"hard:0:p1/64": TaikoNote.KAT.value},
+        ).model_dump(),
+    )
+    assert r_fine.status_code == 200
+    fine_hard = next(c for c in r_fine.json()["chart"]["courses"] if c["difficulty"] == "hard")
+    assert len(fine_hard["measures"][0]["notes"]) % 64 == 0
+    assert fine_hard["measures"][0]["notes"][len(fine_hard["measures"][0]["notes"]) // 64] == TaikoNote.KAT.value
+
+    balloon_overrides = SongOverrides(
+        song_id="ui_test_song",
+        preset="punk_gallop",
+        note_edits={
+            "hard:0:p1/16": TaikoNote.BALLOON.value,
+            "hard:0:p3/16": TaikoNote.END.value,
+        },
+        balloon_counts_by_course={"hard": [10]},
+    )
+    r_balloon = client.post(
+        "/api/songs/ui_test_song/arrange",
+        json=balloon_overrides.model_dump(),
+    )
+    assert r_balloon.status_code == 200
+    assert "BALLOON:10" in (song_dir / "ui_test_song.tja").read_text(encoding="utf-8")
+
+    invalid_balloon = SongOverrides(
+        song_id="ui_test_song",
+        preset="punk_gallop",
+        note_edits={"hard:0:p1/16": TaikoNote.BALLOON.value},
+        balloon_counts_by_course={"hard": [10]},
+    )
+    r_invalid = client.post(
+        "/api/songs/ui_test_song/arrange",
+        json=invalid_balloon.model_dump(),
+    )
+    assert r_invalid.status_code == 422

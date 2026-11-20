@@ -28,6 +28,66 @@ from taikolab.ui import wizard as wizard_module
 from taikolab.ui.wizard import TaikoWizard
 
 
+def test_opening_editor_again_raises_existing_view():
+    class ExistingEditor:
+        raised = False
+
+        def lift(self):
+            self.raised = True
+
+    wizard = TaikoWizard.__new__(TaikoWizard)
+    wizard.editor_view = ExistingEditor()
+
+    wizard._show_editor("existing-song")
+
+    assert wizard.editor_view.raised
+
+
+def test_editor_can_open_without_building_a_new_song():
+    wizard = TaikoWizard.__new__(TaikoWizard)
+    wizard.last_built_song_id = None
+    opened: list[str] = []
+    wizard._show_editor = opened.append
+
+    wizard._open_last_editor()
+
+    assert opened == [""]
+
+
+def test_open_existing_tja_navigates_the_embedded_editor(monkeypatch, tmp_path: Path):
+    class FakeServer:
+        url = "http://127.0.0.1:1234"
+
+        def open_tja(self, path: Path) -> str:
+            self.path = path
+            return "import-id"
+
+    class FakeWebView:
+        def navigate(self, url: str) -> None:
+            self.url = url
+
+    class FakeLabel:
+        def configure(self, **kwargs: str) -> None:
+            self.text = kwargs["text"]
+
+    path = tmp_path / "old-chart.tja"
+    monkeypatch.setattr(
+        wizard_module.filedialog,
+        "askopenfilename",
+        lambda **_kwargs: str(path),
+    )
+    wizard = TaikoWizard.__new__(TaikoWizard)
+    wizard.editor_server = FakeServer()
+    wizard.editor_webview = FakeWebView()
+    wizard.editor_title_label = FakeLabel()
+
+    wizard._open_existing_tja()
+
+    assert wizard.editor_server.path == path
+    assert wizard.editor_webview.url.endswith("/?import_id=import-id")
+    assert wizard.editor_title_label.text.endswith("old-chart")
+
+
 def test_song_id_is_safe_and_auto_suffixed():
     assert make_song_id("Blink-182", "The Rock Show") == "blink-182-the-rock-show-auto"
     assert make_song_id("Björk", "Army of Me", variant=2) == "bjork-army-of-me-2-auto"

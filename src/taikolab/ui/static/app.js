@@ -18,6 +18,7 @@ const REGION_PALETTE = [
 
 let state = {
   songId: null,
+  importId: null,
   data: null,
   selectedSectionIdx: 0,
   loopSection: false,
@@ -27,12 +28,23 @@ let state = {
   tapArmed: false,
   sessionTaps: [], // raw timestamps recorded during current Numpad-0 take
   punchStartBaseline: null,
+  referenceHits: [],
+  hitScreenItems: [],
+  rollScreenItems: [],
+  measureScreenItems: [],
+  selectedEdit: null,
+  drag: null,
+  editUndo: [],
+  editRedo: [],
+  suppressClick: false,
 };
 
 let wavesurfer = null;
 let regionsPlugin = null;
 let audioCtx = null;
 let hitMasterGain = null;
+let referenceMasterGain = null;
+const MAX_EDIT_HISTORY = 100;
 
 // --- WebAudio Synth Hitsounds with Boostable Gain & Limiter ---
 function ensureAudioCtx() {
@@ -45,6 +57,9 @@ function ensureAudioCtx() {
     hitMasterGain = audioCtx.createGain();
     hitMasterGain.gain.value = parseFloat(document.getElementById("hitVol").value || "1.35");
     hitMasterGain.connect(comp).connect(audioCtx.destination);
+    referenceMasterGain = audioCtx.createGain();
+    referenceMasterGain.gain.value = parseFloat(document.getElementById("referenceVol").value || "0.8");
+    referenceMasterGain.connect(comp).connect(audioCtx.destination);
   }
   if (audioCtx.state === "suspended") {
     audioCtx.resume();
@@ -96,6 +111,23 @@ function playTapTickSound() {
   osc.stop(now + 0.04);
 }
 
+function playReferenceSound(drumClass) {
+  if (!document.getElementById("chkReferenceClicks").checked) return;
+  ensureAudioCtx();
+  const now = audioCtx.currentTime;
+  const isKick = drumClass === "kick";
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = isKick ? "sine" : "square";
+  osc.frequency.setValueAtTime(isKick ? 220 : 1040, now);
+  osc.frequency.exponentialRampToValueAtTime(isKick ? 75 : 520, now + 0.045);
+  gain.gain.setValueAtTime(isKick ? 0.7 : 0.35, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
+  osc.connect(gain).connect(referenceMasterGain);
+  osc.start(now);
+  osc.stop(now + 0.06);
+}
+
 function showToast(msg) {
   const el = document.getElementById("toast");
   el.textContent = msg;
@@ -135,17 +167,93 @@ function computeFlattenedEvents(course) {
     for (let s = 0; s < L; s++) {
       const code = m.notes[s];
       const t = start + (s / L) * dur;
-      if (code === 5 || code === 6) {
-        rollStart = { time: t, big: code === 6 };
+      if (code === 5 || code === 6 || code === 7) {
+        rollStart = {
+          time: t,
+          big: code === 6,
+          balloon: code === 7,
+          mIdx: m.measure_idx,
+          sIdx: s,
+          grid: L,
+        };
       } else if (code === 8 && rollStart) {
-        rolls.push({ start: rollStart.time, end: t, big: rollStart.big });
+        rolls.push({
+          ...rollStart,
+          end: t,
+          endMIdx: m.measure_idx,
+          endSIdx: s,
+          endGrid: L,
+        });
         rollStart = null;
       } else if (code >= 1 && code <= 4) {
-        notes.push({ time: t, code, mIdx: m.measure_idx, sIdx: s, grid: L });
+        notes.push({
+          time: t,
+          code,
+          mIdx: m.measure_idx,
+          sIdx: s,
+          grid: L,
+          key: editKey(m.measure_idx, s, L),
+        });
       }
     }
   }
   return { notes, rolls };
+}
+
+function cloneEditState() {
+  return JSON.parse(JSON.stringify({
+    note_edits: state.data?.overrides?.note_edits || {},
+    balloon_counts_by_course: state.data?.overrides?.balloon_counts_by_course || {},
+  }));
+}
+
+function saveUndoPoint() {
+  state.editUndo.push(cloneEditState());
+  if (state.editUndo.length > MAX_EDIT_HISTORY) state.editUndo.shift();
+  state.editRedo = [];
+  updateUndoButtons();
+}
+
+function updateUndoButtons() {
+  document.getElementById("btnUndo").disabled = state.editUndo.length === 0;
+  document.getElementById("btnRedo").disabled = state.editRedo.length === 0;
+}
+
+function restoreEditState(snapshot) {
+  if (!state.data) return;
+  state.data.overrides.note_edits = snapshot.note_edits || {};
+  state.data.overrides.balloon_counts_by_course = snapshot.balloon_counts_by_course || {};
+  state.selectedEdit = null;
+  rebuildChart(false);
+  updateUndoButtons();
+}
+
+function undoEdit() {
+  if (!state.data || state.editUndo.length === 0) return;
+  state.editRedo.push(cloneEditState());
+  restoreEditState(state.editUndo.pop());
+}
+
+function redoEdit() {
+  if (!state.data || state.editRedo.length === 0) return;
+  state.editUndo.push(cloneEditState());
+  restoreEditState(state.editRedo.pop());
+}
+
+function editKey(measureIndex, numerator, denominator) {
+  let n = Math.max(0, Math.min(denominator - 1, Math.round(numerator)));
+  let d = denominator;
+  let a = n;
+  let b = d;
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  const divisor = Math.max(1, a);
+  n /= divisor;
+  d /= divisor;
+  return `${document.getElementById("diffSelect").value}:${measureIndex}:p${n}/${d}`;
 }
 
 function updateTapStatusBadge() {
@@ -360,13 +468,17 @@ async function rebuildChart(exportToSim = false) {
   state.data.overrides.global_offset_ms = parseFloat(document.getElementById("globalOffsetInput").value || "0");
   state.data.overrides.tap_latency_ms = parseFloat(document.getElementById("tapLatencyInput").value || "0");
   const endpoint = exportToSim ? "export" : "arrange";
-  const res = await fetch(`/api/songs/${state.songId}/${endpoint}`, {
+  const url = state.importId
+    ? `/api/imported/${state.importId}/${endpoint}`
+    : `/api/songs/${state.songId}/${endpoint}`;
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(state.data.overrides),
   });
   if (!res.ok) {
-    showToast("Error rebuilding chart");
+    const body = await res.json();
+    showToast(body.detail || "Could not rebuild the chart");
     return;
   }
   state.data = await res.json();
@@ -374,8 +486,14 @@ async function rebuildChart(exportToSim = false) {
   renderSectionList();
   renderRegions();
   renderDiagnostics();
+  if (exportToSim && state.importId) {
+    state.editUndo = [];
+    state.editRedo = [];
+  }
+  updateUndoButtons();
   if (exportToSim) {
-    showToast(state.data.exported_path ? `Exported -> ${state.data.exported_path}` : "Saved .tja");
+    const verb = state.importId ? "Saved" : "Exported";
+    showToast(state.data.exported_path ? `${verb} -> ${state.data.exported_path}` : "Saved .tja");
   }
 }
 
@@ -445,9 +563,23 @@ function recordNumpadTap() {
 }
 
 async function loadSong(songId) {
+  state.importId = null;
+  document.body.classList.remove("imported-tja");
+  document.getElementById("songSelect").disabled = false;
+  document.getElementById("presetSelect").disabled = false;
+  document.getElementById("btnExport").textContent = "Export to YataiDON";
   state.songId = songId;
   const res = await fetch(`/api/songs/${songId}`);
+  if (!res.ok) {
+    showToast(`Could not load song: ${songId}`);
+    return;
+  }
   state.data = await res.json();
+  state.referenceHits = state.data.reference_hits || [];
+  state.editUndo = [];
+  state.editRedo = [];
+  state.selectedEdit = null;
+  updateUndoButtons();
   state.selectedSectionIdx = 0;
 
   document.getElementById("presetSelect").value = state.data.overrides.preset || "punk_gallop";
@@ -470,8 +602,83 @@ async function loadSong(songId) {
   initWaveSurfer(`/api/songs/${songId}/audio?stem=mix`);
 }
 
+async function loadImportedTja(importId) {
+  state.importId = importId;
+  state.songId = importId;
+  document.body.classList.add("imported-tja");
+  const response = await fetch(`/api/imported/${importId}`);
+  if (!response.ok) {
+    showToast(`Could not load imported TJA: ${importId}`);
+    return;
+  }
+  state.data = await response.json();
+  state.referenceHits = [];
+  state.editUndo = [];
+  state.editRedo = [];
+  state.selectedEdit = null;
+  state.selectedSectionIdx = 0;
+  updateUndoButtons();
+
+  const songSelect = document.getElementById("songSelect");
+  songSelect.innerHTML = "";
+  const option = document.createElement("option");
+  option.value = importId;
+  option.textContent = `${state.data.analysis_summary.title} (TJA)`;
+  songSelect.appendChild(option);
+  songSelect.value = importId;
+  songSelect.disabled = true;
+  document.getElementById("btnExport").textContent = "Save TJA";
+  document.getElementById("presetSelect").disabled = true;
+  document.getElementById("presetSelect").value = state.data.overrides.preset;
+  document.getElementById("globalOffsetInput").value = state.data.overrides.global_offset_ms || 0;
+  document.getElementById("tapLatencyInput").value = state.data.overrides.tap_latency_ms ?? 0;
+
+  const difficultySelect = document.getElementById("diffSelect");
+  const hasUra = state.data.chart.courses.some((course) => course.difficulty === "ura");
+  let uraOption = [...difficultySelect.options].find((item) => item.value === "ura");
+  if (hasUra && !uraOption) {
+    uraOption = document.createElement("option");
+    uraOption.value = "ura";
+    uraOption.textContent = "Ura / Edit";
+    difficultySelect.appendChild(uraOption);
+  } else if (!hasUra && uraOption) {
+    uraOption.remove();
+  }
+  difficultySelect.value = state.data.chart.courses[0]?.difficulty || "hard";
+
+  const stemSelect = document.getElementById("stemSelect");
+  stemSelect.innerHTML = "";
+  const hasAudio = state.data.analysis_summary.stems_available.includes("mix");
+  const mixOption = document.createElement("option");
+  mixOption.value = "mix";
+  mixOption.textContent = "Full Mix";
+  stemSelect.appendChild(mixOption);
+  stemSelect.disabled = !hasAudio;
+  document.getElementById("btnPlay").disabled = !hasAudio;
+  document.getElementById("btnLoopSec").disabled = !hasAudio;
+  renderSectionList();
+  populateInspector();
+  renderDiagnostics();
+  if (hasAudio) {
+    initWaveSurfer(`/api/imported/${importId}/audio`);
+  } else {
+    showToast("Chart opened. Its WAVE audio file was not found beside the TJA.");
+  }
+}
+
 async function init() {
+  const importId = new URLSearchParams(window.location.search).get("import_id");
+  if (importId) {
+    await loadImportedTja(importId);
+    requestAnimationFrame(drawLoop);
+    return;
+  }
+
   const res = await fetch("/api/songs");
+  if (!res.ok) {
+    showToast("Could not load workspace songs");
+    return;
+  }
   const json = await res.json();
   const sel = document.getElementById("songSelect");
   sel.innerHTML = "";
@@ -482,7 +689,10 @@ async function init() {
     sel.appendChild(opt);
   });
   if (json.songs.length > 0) {
-    const preferred = json.songs.find((s) => s.song_id === "dumpweed")?.song_id || json.songs[0].song_id;
+    const requested = new URLSearchParams(window.location.search).get("song");
+    const preferred = json.songs.find((s) => s.song_id === requested)?.song_id ||
+      json.songs.find((s) => s.song_id === "dumpweed")?.song_id ||
+      json.songs[0].song_id;
     sel.value = preferred;
     await loadSong(preferred);
   }
@@ -493,20 +703,37 @@ async function init() {
 function drawLoop() {
   const canvas = document.getElementById("taikoCanvas");
   const ctx = canvas.getContext("2d");
-  const W = canvas.width;
-  const H = canvas.height;
+  const W = canvas.clientWidth;
+  const H = canvas.clientHeight;
+  const pixelRatio = window.devicePixelRatio || 1;
+  const pixelWidth = Math.round(W * pixelRatio);
+  const pixelHeight = Math.round(H * pixelRatio);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   const hitX = 110;
-  const centerY = H / 2;
+  const chartY = Math.round(H * 0.36);
+  const ghostY = Math.round(H * 0.76);
   const pxPerSec = parseFloat(document.getElementById("laneZoom").value || "340");
 
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = "#161a22";
-  ctx.fillRect(0, 26, W, H - 52);
+  ctx.fillRect(0, 32, W, H - 48);
+  ctx.fillStyle = "#121720";
+  ctx.fillRect(0, ghostY - 28, W, H - ghostY + 4);
+  ctx.strokeStyle = "#2a303d";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, ghostY - 40);
+  ctx.lineTo(W, ghostY - 40);
+  ctx.stroke();
 
   ctx.strokeStyle = state.tapArmed ? "#e12d39" : "#5a657d";
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.arc(hitX, centerY, 26, 0, Math.PI * 2);
+  ctx.arc(hitX, chartY, 26, 0, Math.PI * 2);
   ctx.stroke();
 
   const course = getActiveCourse();
@@ -523,6 +750,8 @@ function drawLoop() {
 
   state.hitScreenItems = [];
   state.slotScreenItems = [];
+  state.rollScreenItems = [];
+  state.measureScreenItems = [];
 
   if (course) {
     const { notes, rolls } = computeFlattenedEvents(course);
@@ -533,8 +762,15 @@ function drawLoop() {
       const prevT = state.lastPlayTime;
       if (curT > prevT && (curT - prevT) < 0.15) {
         for (const n of notes) {
-          if (n.time > prevT && n.time <= curT) {
+          if (n.time > prevT && n.time <= curT && document.getElementById("chkHitsounds").checked) {
             playTaikoSound(n.code);
+          }
+        }
+        if (document.getElementById("chkReferenceClicks").checked) {
+          for (const hit of state.referenceHits) {
+            if (hit.time_sec > prevT && hit.time_sec <= curT) {
+              playReferenceSound(hit.drum_class);
+            }
           }
         }
       }
@@ -548,11 +784,22 @@ function drawLoop() {
       if (mEnd < minVisibleT || mStart > maxVisibleT) continue;
 
       const xBar = hitX + (mStart - curT) * pxPerSec;
+      const xEnd = hitX + (mEnd - curT) * pxPerSec;
+      state.measureScreenItems.push({
+        mIdx: m.measure_idx,
+        x1: xBar,
+        x2: xEnd,
+        start: mStart,
+        end: mEnd,
+        grid: m.notes.length,
+        numerator: m.numerator,
+        denominator: m.denominator,
+      });
       ctx.strokeStyle = (state.data.overrides.custom_downbeats?.length >= 2) ? "#8a6d29" : "#3a4254";
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(xBar, 26);
-      ctx.lineTo(xBar, H - 26);
+      ctx.moveTo(xBar, 32);
+      ctx.lineTo(xBar, H - 12);
       ctx.stroke();
 
       ctx.fillStyle = "#8b95a8";
@@ -568,11 +815,19 @@ function drawLoop() {
           ctx.strokeStyle = "#242a36";
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(sx, 36);
-          ctx.lineTo(sx, H - 36);
+          ctx.moveTo(sx, 42);
+          ctx.lineTo(sx, ghostY - 38);
           ctx.stroke();
         }
-        state.slotScreenItems.push({ x: sx, y: centerY, mIdx: m.measure_idx, sIdx: s, code: m.notes[s] });
+        state.slotScreenItems.push({
+          x: sx,
+          y: chartY,
+          mIdx: m.measure_idx,
+          sIdx: s,
+          grid: L,
+          code: m.notes[s],
+          key: editKey(m.measure_idx, s, L),
+        });
       }
     }
 
@@ -580,9 +835,25 @@ function drawLoop() {
       if (r.end < minVisibleT || r.start > maxVisibleT) continue;
       const x1 = hitX + (r.start - curT) * pxPerSec;
       const x2 = hitX + (r.end - curT) * pxPerSec;
-      const rad = r.big ? 24 : 18;
-      ctx.fillStyle = "rgba(245, 185, 53, 0.85)";
-      ctx.fillRect(x1, centerY - rad, Math.max(8, x2 - x1), rad * 2);
+      const color = r.balloon ? "#be68ec" : "#f5b935";
+      ctx.fillStyle = color;
+      ctx.globalAlpha = state.selectedEdit?.startKey === editKey(r.mIdx, r.sIdx, r.grid) ? 1 : 0.82;
+      ctx.fillRect(x1, chartY - 14, Math.max(10, x2 - x1), 28);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#101319";
+      ctx.font = "bold 11px sans-serif";
+      ctx.fillText(r.balloon ? "BALLOON" : r.big ? "BIG ROLL" : "ROLL", x1 + 6, chartY + 4);
+      const startKey = editKey(r.mIdx, r.sIdx, r.grid);
+      const endKey = editKey(r.endMIdx, r.endSIdx, r.endGrid);
+      state.rollScreenItems.push({
+        x1,
+        x2,
+        y: chartY,
+        startKey,
+        endKey,
+        roll: r,
+        r: { startKey, endKey, balloon: r.balloon, big: r.big, start: r.start, end: r.end },
+      });
     }
 
     for (let i = notes.length - 1; i >= 0; i--) {
@@ -590,71 +861,359 @@ function drawLoop() {
       if (n.time < minVisibleT || n.time > maxVisibleT) continue;
       const x = hitX + (n.time - curT) * pxPerSec;
       const isBig = n.code === 3 || n.code === 4;
-      const rad = isBig ? 24 : 17;
+      const rad = isBig ? 20 : 15;
 
       ctx.fillStyle = NOTE_COLORS[n.code];
       ctx.beginPath();
-      ctx.arc(x, centerY, rad, 0, Math.PI * 2);
+      ctx.arc(x, chartY, rad, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = "#ffffff";
       ctx.lineWidth = 2.5;
+      if (state.selectedEdit?.key === n.key) ctx.lineWidth = 4;
       ctx.stroke();
 
-      state.hitScreenItems.push({ x, y: centerY, r: rad + 6, mIdx: n.mIdx, sIdx: n.sIdx, code: n.code });
+      state.hitScreenItems.push({
+        x,
+        y: chartY,
+        r: rad + 7,
+        mIdx: n.mIdx,
+        sIdx: n.sIdx,
+        grid: n.grid,
+        code: n.code,
+        key: n.key,
+      });
+    }
+
+    ctx.fillStyle = "#b5c1d3";
+    ctx.font = "11px sans-serif";
+    ctx.fillText("PLAYABLE CHART", 12, 45);
+    ctx.fillStyle = "#8895a8";
+    ctx.fillText("MIDI GHOST REFERENCE", 12, ghostY - 30);
+    for (const hit of state.referenceHits) {
+      if (hit.time_sec < minVisibleT || hit.time_sec > maxVisibleT) continue;
+      const x = hitX + (hit.time_sec - curT) * pxPerSec;
+      const kick = hit.drum_class === "kick";
+      const snare = hit.drum_class === "snare";
+      ctx.fillStyle = kick ? "#72c8a4" : snare ? "#d29cff" : "#8792a3";
+      ctx.globalAlpha = 0.72;
+      ctx.beginPath();
+      if (kick) {
+        ctx.arc(x, ghostY, 6, 0, Math.PI * 2);
+      } else {
+        ctx.moveTo(x, ghostY - 7);
+        ctx.lineTo(x + 6, ghostY);
+        ctx.lineTo(x, ghostY + 7);
+        ctx.lineTo(x - 6, ghostY);
+        ctx.closePath();
+      }
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    if (state.referenceHits.length === 0) {
+      ctx.fillStyle = "#707b8d";
+      ctx.fillText("No aligned MIDI drum events are available for this song.", 190, ghostY + 4);
+    }
+
+    if (state.drag?.currentPoint) {
+      const point = state.drag.currentPoint;
+      const x = hitX + (point.time - curT) * pxPerSec;
+      ctx.strokeStyle = "#ffffff";
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, 42);
+      ctx.lineTo(x, ghostY - 38);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
   }
 
   requestAnimationFrame(drawLoop);
 }
 
-// --- Click-on-Lane Individual Note Editing ---
-function handleCanvasClick(e, isRightClick) {
-  if (!state.data) return;
-  const canvas = document.getElementById("taikoCanvas");
-  const rect = canvas.getBoundingClientRect();
-  const cx = ((e.clientX - rect.left) / rect.width) * canvas.width;
-  const cy = ((e.clientY - rect.top) / rect.height) * canvas.height;
-  const diff = document.getElementById("diffSelect").value;
+function pointFromPointer(x) {
+  const measures = state.measureScreenItems;
+  if (measures.length === 0) return null;
+  let measure = measures.find((item) => x >= item.x1 && x < item.x2);
+  if (!measure) {
+    measure = measures.reduce((best, item) => {
+      const distance = x < item.x1 ? item.x1 - x : x - item.x2;
+      const bestDistance = x < best.x1 ? best.x1 - x : x - best.x2;
+      return distance < bestDistance ? item : best;
+    });
+  }
+  const span = Math.max(1, measure.x2 - measure.x1);
+  const position = Math.max(0, Math.min(0.999999, (x - measure.x1) / span));
+  const snap = document.getElementById("snapToggle").checked;
+  const gridValue = document.getElementById("editGrid").value;
+  let subdivisions = 64;
+  if (snap) {
+    subdivisions = gridValue === "chart"
+      ? measure.grid
+      : Math.max(1, Math.round(measure.numerator * Number(gridValue) / measure.denominator));
+  }
+  const numerator = Math.max(0, Math.min(subdivisions - 1, Math.round(position * subdivisions)));
+  const snappedPosition = numerator / subdivisions;
+  const time = measure.start + snappedPosition * (measure.end - measure.start);
+  return {
+    mIdx: measure.mIdx,
+    numerator,
+    denominator: subdivisions,
+    position: snappedPosition,
+    time,
+    key: editKey(measure.mIdx, numerator, subdivisions),
+  };
+}
 
-  if (!state.data.overrides.note_edits) state.data.overrides.note_edits = {};
+function pointForTime(time) {
+  const measure = state.measureScreenItems.find((item) => time >= item.start && time < item.end);
+  if (!measure) return null;
+  const position = (time - measure.start) / (measure.end - measure.start);
+  const snap = document.getElementById("snapToggle").checked;
+  const gridValue = document.getElementById("editGrid").value;
+  let subdivisions = 64;
+  if (snap) {
+    subdivisions = gridValue === "chart"
+      ? measure.grid
+      : Math.max(1, Math.round(measure.numerator * Number(gridValue) / measure.denominator));
+  }
+  const numerator = Math.max(0, Math.min(subdivisions - 1, Math.round(position * subdivisions)));
+  const snappedPosition = numerator / subdivisions;
+  return {
+    mIdx: measure.mIdx,
+    numerator,
+    denominator: subdivisions,
+    position: snappedPosition,
+    time: measure.start + snappedPosition * (measure.end - measure.start),
+    key: editKey(measure.mIdx, numerator, subdivisions),
+  };
+}
 
-  const hitNote = state.hitScreenItems.find((item) => Math.hypot(item.x - cx, item.y - cy) <= item.r);
-  if (hitNote) {
-    const key = `${diff}:${hitNote.mIdx}:${hitNote.sIdx}`;
-    if (isRightClick) {
-      state.data.overrides.note_edits[key] = 0;
-    } else {
-      const cycle = { 1: 2, 2: 3, 3: 4, 4: 0 };
-      state.data.overrides.note_edits[key] = cycle[hitNote.code] ?? 0;
-    }
-    rebuildChart(false);
+function findNoteAt(x, y) {
+  return state.hitScreenItems.find((item) => Math.hypot(item.x - x, item.y - y) <= item.r);
+}
+
+function findRollAt(x, y) {
+  return state.rollScreenItems.find((item) => (
+    y >= item.y - 20 && y <= item.y + 20 && x >= item.x1 && x <= item.x2
+  ));
+}
+
+function setSingleEdit(point, code, sourceKey = null) {
+  if (!state.data || !point) return;
+  const existing = state.hitScreenItems.find((item) => (
+    item.mIdx === point.mIdx && Math.abs(item.sIdx / item.grid - point.position) < 0.0001
+  ));
+  if (existing && existing.key !== sourceKey) {
+    showToast("That chart position already has a note. Choose a note tool to replace it.");
+    return;
+  }
+  saveUndoPoint();
+  if (sourceKey) state.data.overrides.note_edits[sourceKey] = 0;
+  state.data.overrides.note_edits[point.key] = code;
+  state.selectedEdit = { key: point.key };
+  rebuildChart(false);
+}
+
+function setRollSpan(start, end, code, existingRoll = null) {
+  if (!state.data || !start || !end) return;
+  if (end.time < start.time) [start, end] = [end, start];
+  if (end.time - start.time < 0.03) {
+    showToast("A roll needs a visible start and end. Drag across at least one grid step.");
+    return;
+  }
+  const course = getActiveCourse();
+  const { rolls } = computeFlattenedEvents(course);
+  const offset = (state.data.overrides.global_offset_ms || 0) / 1000;
+  const overlaps = rolls.some((roll) => {
+    if (
+      existingRoll &&
+      roll.mIdx === existingRoll.roll.mIdx &&
+      roll.sIdx === existingRoll.roll.sIdx
+    ) return false;
+    const rollStart = roll.start;
+    return start.time < roll.end && end.time > rollStart;
+  });
+  if (overlaps) {
+    showToast("Rolls cannot overlap. Move the new span outside the existing roll.");
     return;
   }
 
-  if (!isRightClick && Math.abs(cy - canvas.height / 2) < 42) {
-    let best = null;
-    let bestDist = 14;
-    for (const s of state.slotScreenItems) {
-      const d = Math.abs(s.x - cx);
-      if (d < bestDist) {
-        bestDist = d;
-        best = s;
+  saveUndoPoint();
+  const edits = state.data.overrides.note_edits;
+  const chartCourse = course;
+  for (const measure of chartCourse.measures) {
+    const measureStart = measure.start_sec + offset;
+    const duration = measure.end_sec - measure.start_sec;
+    for (let slot = 0; slot < measure.notes.length; slot++) {
+      const time = measureStart + (slot / measure.notes.length) * duration;
+      if (time > start.time && time < end.time) {
+        edits[editKey(measure.measure_idx, slot, measure.notes.length)] = 0;
       }
     }
-    if (best) {
-      const key = `${diff}:${best.mIdx}:${best.sIdx}`;
-      state.data.overrides.note_edits[key] = 1;
-      rebuildChart(false);
+  }
+  if (existingRoll) {
+    edits[existingRoll.startKey] = 0;
+    edits[existingRoll.endKey] = 0;
+  }
+  edits[start.key] = code;
+  edits[end.key] = 8;
+
+  const difficulty = document.getElementById("diffSelect").value;
+  if (code === 7 && !existingRoll) {
+    if (!state.data.overrides.balloon_counts_by_course) {
+      state.data.overrides.balloon_counts_by_course = {};
     }
+    const counts = state.data.overrides.balloon_counts_by_course[difficulty] ||
+      [...(course.balloon_counts || [])];
+    counts.push(Number(document.getElementById("balloonCount").value || "10"));
+    state.data.overrides.balloon_counts_by_course[difficulty] = counts;
+  }
+  state.selectedEdit = existingRoll ? { startKey: start.key } : null;
+  rebuildChart(false);
+}
+
+function removeRoll(item) {
+  if (!state.data || !item) return;
+  saveUndoPoint();
+  state.data.overrides.note_edits[item.startKey] = 0;
+  state.data.overrides.note_edits[item.endKey] = 0;
+  if (item.roll.balloon) {
+    const difficulty = document.getElementById("diffSelect").value;
+    const counts = state.data.overrides.balloon_counts_by_course?.[difficulty] ||
+      [...(getActiveCourse()?.balloon_counts || [])];
+    const balloons = state.rollScreenItems.filter((roll) => roll.roll.balloon);
+    const index = balloons.findIndex((roll) => roll.startKey === item.startKey);
+    if (index >= 0) counts.splice(index, 1);
+    state.data.overrides.balloon_counts_by_course[difficulty] = counts;
+  }
+  state.selectedEdit = null;
+  rebuildChart(false);
+}
+
+function deleteSelectedEdit() {
+  if (!state.data || !state.selectedEdit) return;
+  if (state.selectedEdit.startKey) {
+    const roll = state.rollScreenItems.find(
+      (item) => item.startKey === state.selectedEdit.startKey
+    );
+    if (roll) removeRoll(roll);
+    return;
+  }
+  const note = state.hitScreenItems.find((item) => item.key === state.selectedEdit.key);
+  if (note) {
+    setSingleEdit(
+      { mIdx: note.mIdx, numerator: note.sIdx, denominator: note.grid, key: note.key },
+      0,
+      note.key
+    );
   }
 }
 
+function finishCanvasEdit(event) {
+  const drag = state.drag;
+  if (!drag) return;
+  const rect = event.currentTarget.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const point = pointFromPointer(x);
+  state.drag = null;
+  if (!point) return;
+
+  if (drag.kind === "note") {
+    if (drag.moved) {
+      setSingleEdit(point, drag.note.code, drag.note.key);
+    } else {
+      const tool = document.getElementById("editTool").value;
+      if (tool === "5" || tool === "7") {
+        state.selectedEdit = { key: drag.note.key };
+        showToast("Use click-drag on an empty chart position to draw a roll or balloon.");
+        return;
+      }
+      const code = ["1", "2", "3", "4"].includes(tool)
+        ? Number(tool)
+        : ({ 1: 2, 2: 3, 3: 4, 4: 0 }[drag.note.code] ?? 0);
+      setSingleEdit(point, code, drag.note.key);
+    }
+    return;
+  }
+
+  if (drag.kind === "roll") {
+    if (!drag.moved) {
+      state.selectedEdit = { startKey: drag.roll.startKey };
+      return;
+    }
+    const delta = point.time - drag.startPoint.time;
+    const start = pointForTime(drag.roll.roll.start + delta);
+    const end = pointForTime(drag.roll.roll.end + delta);
+    setRollSpan(start, end, drag.roll.roll.balloon ? 7 : drag.roll.roll.big ? 6 : 5, drag.roll);
+    return;
+  }
+
+  const tool = document.getElementById("editTool").value;
+  if (["1", "2", "3", "4"].includes(tool)) {
+    setSingleEdit(point, Number(tool));
+  } else if (tool === "5" || tool === "7") {
+    if (!drag.moved) {
+      showToast("Click and drag on the chart lane to draw a roll or balloon span.");
+      return;
+    }
+    setRollSpan(drag.startPoint, point, Number(tool));
+  }
+}
+
+function handleCanvasPointerDown(event) {
+  if (!state.data || event.button === 2) return;
+  const canvas = document.getElementById("taikoCanvas");
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const note = findNoteAt(x, y);
+  const roll = findRollAt(x, y);
+  const point = pointFromPointer(x);
+  if (!point) return;
+  const tool = document.getElementById("editTool").value;
+  if (wavesurfer?.isPlaying()) wavesurfer.pause();
+  state.selectedEdit = note ? { key: note.key } : roll ? { startKey: roll.startKey } : null;
+  if (note) {
+    state.drag = { kind: "note", note, startX: x, startY: y, currentPoint: point, moved: false };
+  } else if (roll) {
+    state.drag = { kind: "roll", roll, startPoint: point, startX: x, currentPoint: point, moved: false };
+  } else if (y < (canvas.clientHeight * 0.57)) {
+    state.drag = { kind: "add", startPoint: point, startX: x, currentPoint: point, moved: false };
+  } else {
+    return;
+  }
+  canvas.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function handleCanvasPointerMove(event) {
+  if (!state.drag) return;
+  const rect = event.currentTarget.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const point = pointFromPointer(x);
+  if (!point) return;
+  state.drag.currentPoint = point;
+  state.drag.moved = state.drag.moved || Math.abs(x - state.drag.startX) > 4;
+}
+
+function handleCanvasContextMenu(event) {
+  event.preventDefault();
+  const rect = event.currentTarget.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const note = findNoteAt(x, y);
+  const roll = findRollAt(x, y);
+  if (note) setSingleEdit({ mIdx: note.mIdx, numerator: note.sIdx, denominator: note.grid, key: note.key }, 0, note.key);
+  else if (roll) removeRoll(roll);
+}
+
 // --- Event Listeners ---
-document.getElementById("taikoCanvas").addEventListener("click", (e) => handleCanvasClick(e, false));
-document.getElementById("taikoCanvas").addEventListener("contextmenu", (e) => {
-  e.preventDefault();
-  handleCanvasClick(e, true);
-});
+const taikoCanvas = document.getElementById("taikoCanvas");
+taikoCanvas.addEventListener("pointerdown", handleCanvasPointerDown);
+taikoCanvas.addEventListener("pointermove", handleCanvasPointerMove);
+taikoCanvas.addEventListener("pointerup", finishCanvasEdit);
+taikoCanvas.addEventListener("pointercancel", () => { state.drag = null; });
+taikoCanvas.addEventListener("contextmenu", handleCanvasContextMenu);
 
 document.getElementById("songSelect").addEventListener("change", (e) => loadSong(e.target.value));
 document.getElementById("stemSelect").addEventListener("change", (e) => {
@@ -682,6 +1241,13 @@ document.getElementById("hitVol").addEventListener("input", (e) => {
     hitMasterGain.gain.setValueAtTime(v, audioCtx.currentTime);
   }
 });
+document.getElementById("referenceVol").addEventListener("input", (e) => {
+  const value = parseFloat(e.target.value);
+  document.getElementById("lblReferenceVol").textContent = `${Math.round(value * 100)}%`;
+  if (referenceMasterGain && audioCtx) {
+    referenceMasterGain.gain.setValueAtTime(value, audioCtx.currentTime);
+  }
+});
 
 document.getElementById("btnPlay").addEventListener("click", () => {
   ensureAudioCtx();
@@ -698,12 +1264,94 @@ window.addEventListener("keydown", (e) => {
     if (!e.repeat) recordNumpadTap();
     return;
   }
-  if (e.code === "Space" && !["INPUT", "SELECT"].includes(document.activeElement.tagName)) {
+  const target = e.target;
+  const isTyping = target instanceof HTMLElement &&
+    (["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName) || target.isContentEditable);
+  const commandKey = e.ctrlKey || e.metaKey;
+
+  if (commandKey && e.code === "KeyZ" && !isTyping) {
+    e.preventDefault();
+    if (e.shiftKey) redoEdit();
+    else undoEdit();
+    return;
+  }
+  if (commandKey && e.code === "KeyY" && !isTyping) {
+    e.preventDefault();
+    redoEdit();
+    return;
+  }
+  if (commandKey && e.code === "KeyS" && !isTyping) {
+    e.preventDefault();
+    rebuildChart(true);
+    return;
+  }
+  if (e.code === "Space" && !isTyping) {
     e.preventDefault();
     ensureAudioCtx();
     if (wavesurfer) wavesurfer.playPause();
+    return;
+  }
+  if (isTyping) return;
+
+  if (e.code === "Delete" || e.code === "Backspace") {
+    e.preventDefault();
+    deleteSelectedEdit();
+  } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+    if (!wavesurfer) return;
+    e.preventDefault();
+    const delta = e.code === "ArrowLeft" ? -1 : 1;
+    wavesurfer.setTime(Math.max(0, wavesurfer.getCurrentTime() + delta * (e.shiftKey ? 1 : 0.1)));
+  } else if (e.code === "Home" || e.code === "End") {
+    if (!wavesurfer) return;
+    e.preventDefault();
+    wavesurfer.setTime(e.code === "Home" ? 0 : wavesurfer.getDuration());
+  } else if (e.code === "Equal" || e.code === "NumpadAdd") {
+    const zoom = document.getElementById("laneZoom");
+    zoom.value = String(Math.min(Number(zoom.max), Number(zoom.value) + 20));
+  } else if (e.code === "Minus" || e.code === "NumpadSubtract") {
+    const zoom = document.getElementById("laneZoom");
+    zoom.value = String(Math.max(Number(zoom.min), Number(zoom.value) - 20));
+  } else if (e.code === "Escape") {
+    state.drag = null;
+    state.selectedEdit = null;
+  } else if (e.code === "KeyS") {
+    const snap = document.getElementById("snapToggle");
+    snap.checked = !snap.checked;
+    snap.dispatchEvent(new Event("change"));
+  } else if (e.code === "KeyA") {
+    setEditorTool("select");
+  } else if (e.code === "KeyD") {
+    setEditorTool("1");
+  } else if (e.code === "KeyK") {
+    setEditorTool("2");
+  } else if (e.code === "KeyR") {
+    setEditorTool("5");
+  } else if (e.code === "KeyB") {
+    setEditorTool("7");
   }
 });
+
+document.getElementById("btnUndo").addEventListener("click", undoEdit);
+document.getElementById("btnRedo").addEventListener("click", redoEdit);
+document.getElementById("btnHelp").addEventListener("click", () => {
+  document.getElementById("shortcutPanel").classList.toggle("hidden");
+});
+function setEditorTool(value) {
+  const tool = document.getElementById("editTool");
+  tool.value = value;
+  tool.dispatchEvent(new Event("change"));
+}
+document.getElementById("snapToggle").checked =
+  localStorage.getItem("taikolab-editor-snap") !== "false";
+document.getElementById("snapToggle").addEventListener("change", (e) => {
+  localStorage.setItem("taikolab-editor-snap", String(e.target.checked));
+  document.getElementById("editGrid").disabled = !e.target.checked;
+});
+document.getElementById("editGrid").disabled = !document.getElementById("snapToggle").checked;
+document.getElementById("editTool").addEventListener("change", (e) => {
+  document.getElementById("balloonCountControl").classList.toggle("hidden", e.target.value !== "7");
+});
+document.getElementById("balloonCountControl").classList.add("hidden");
 
 // Tap Studio Buttons
 document.getElementById("btnArmTap").addEventListener("click", toggleTapArm);
@@ -888,9 +1536,18 @@ document.getElementById("btnDeleteSection").addEventListener("click", () => {
 
 document.getElementById("btnResetEdits").addEventListener("click", () => {
   if (!state.data) return;
-  state.data.overrides.note_edits = {};
+  const difficulty = document.getElementById("diffSelect").value;
+  const prefix = `${difficulty}:`;
+  saveUndoPoint();
+  state.data.overrides.note_edits = Object.fromEntries(
+    Object.entries(state.data.overrides.note_edits || {}).filter(([key]) => !key.startsWith(prefix))
+  );
+  if (state.data.overrides.balloon_counts_by_course) {
+    delete state.data.overrides.balloon_counts_by_course[difficulty];
+  }
+  state.selectedEdit = null;
   rebuildChart(false);
-  showToast("Manual note edits cleared");
+  showToast(`${difficulty} manual edits cleared`);
 });
 
 document.getElementById("btnExport").addEventListener("click", () => rebuildChart(true));

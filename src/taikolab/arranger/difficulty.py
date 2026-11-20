@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from math import lcm
 
 from taikolab.arranger.hori_filter import apply_hori_ergonomics
 from taikolab.arranger.mapper_drums import PlacedCandidate, map_drum_hits
@@ -256,6 +257,9 @@ def build_course(
     if overrides and overrides.note_edits:
         prefix = f"{difficulty}:"
         valid_codes = {n.value for n in TaikoNote}
+        base_lengths = [len(measure.notes) for measure in measures]
+        base_edits: list[tuple[int, int, int]] = []
+        positioned_edits: list[tuple[int, int, int, int]] = []
         for key, code in overrides.note_edits.items():
             if not key.startswith(prefix) or code not in valid_codes:
                 continue
@@ -264,11 +268,51 @@ def build_course(
                 continue
             try:
                 m_idx = int(parts[1])
-                s_idx = int(parts[2])
             except ValueError:
                 continue
-            if 0 <= m_idx < len(measures) and 0 <= s_idx < len(measures[m_idx].notes):
-                measures[m_idx].notes[s_idx] = code
+            if not 0 <= m_idx < len(measures):
+                continue
+            position = parts[2]
+            if position.startswith("p"):
+                try:
+                    numerator, denominator = map(int, position[1:].split("/", 1))
+                except ValueError:
+                    continue
+                if denominator < 1 or denominator > 256 or not 0 <= numerator < denominator:
+                    continue
+                positioned_edits.append((m_idx, numerator, denominator, code))
+            else:
+                try:
+                    s_idx = int(position)
+                except ValueError:
+                    continue
+                if 0 <= s_idx < base_lengths[m_idx]:
+                    base_edits.append((m_idx, s_idx, code))
+
+        denominators_by_measure: dict[int, list[int]] = {}
+        for m_idx, _, denominator, _ in positioned_edits:
+            denominators_by_measure.setdefault(m_idx, []).append(denominator)
+
+        for m_idx, denominators in denominators_by_measure.items():
+            measure = measures[m_idx]
+            base_length = base_lengths[m_idx]
+            expanded_length = lcm(base_length, *denominators)
+            if expanded_length > 4096:
+                raise ValueError(f"Manual edit grid for measure {m_idx} exceeds 4096 slots")
+            if expanded_length != base_length:
+                expanded = [TaikoNote.REST.value] * expanded_length
+                for slot_idx, note in enumerate(measure.notes):
+                    expanded[slot_idx * (expanded_length // base_length)] = note
+                measure.notes = expanded
+
+        for m_idx, s_idx, code in base_edits:
+            resolution = len(measures[m_idx].notes) // base_lengths[m_idx]
+            measures[m_idx].notes[s_idx * resolution] = code
+
+        for m_idx, numerator, denominator, code in positioned_edits:
+            resolution = len(measures[m_idx].notes)
+            if resolution % denominator == 0:
+                measures[m_idx].notes[numerator * (resolution // denominator)] = code
 
     stars = estimate_star_rating(difficulty, measures)
     if overrides and difficulty in overrides.difficulty_overrides:

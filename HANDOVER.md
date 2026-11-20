@@ -1,16 +1,36 @@
 # TaikoLab Handover
 
-Updated: 2026-11-19
+Updated: 2026-11-20
 
-## Current goal
+## Current status and next action
 
-Dumpweed timing was playtested and accepted, and its separate variety test was judged good enough for now. Its notes, offset, and BPM map are unchanged; only its highway scroll was normalized to the shared target. The Leaving Song Part II uses the alt-rock profile and shared highway speed. The quiet-guitar safeguard was added and the chart rebuilt; the user confirmed that the result works well.
+The active work is the embedded manual editor, most recently the ability to open, edit, and save an existing `.tja` without rebuilding its song. That implementation is complete. The next step is for the user to test it and report any issues; do not start another feature sprint until they do.
 
-The Kill the Poor pickup/export issue is fixed and its chart is ready for playtesting. The user's latest feedback is that Kill the Poor is satisfying but too repetitive and keeps a strict kick-to-Don / snare-to-Ka mapping. Holiday in Cambodia's Hard chart is a good baseline but also repeats; Voyeur has the same repetition concern. BYOB was not quite on point, Slipknot's Eyeless did not chart well, and audio-only charting usually fails. The current wizard sprint adds per-course source and chart controls; deeper multi-bar repetition detection remains a follow-up.
+To test: close and relaunch with `run_app.bat`, choose **Open Manual Editor**, then **Open Existing TJA…**. Make a small edit and use **Save TJA**; confirm the selected chart changes and that its first-save backup (`<filename>.tja.bak`) exists. A neighboring audio file referenced by `WAVE` is used for preview when available. Imported sessions are in memory for the current app run, so select the chart again after restarting. The importer supports single-branch Taiko charts (Easy, Normal, Hard, Oni, Edit); branching charts are explicitly rejected.
 
-The user heard phrase-end drift in Foo Fighters' Everlong and over-fast slow outros in Police Truck and All His Suits Are Torn. The latest timing experiment substantially improved Everlong's MIDI/audio kick-snare alignment and fixed a false fast outro in Police Truck. Validation was run in temporary directories; existing workspace analyses and TJA files were not replaced and still need regeneration/playtesting after approval.
+The latest full test run passed **67 tests** on 2026-11-20, with one existing Starlette/httpx deprecation warning. Re-run it with `.\.venv\Scripts\python.exe -m pytest -q`. The focused editor lint and JavaScript syntax checks, and `git diff --check`, also passed. Audio playback and real-chart behavior still need the user's desktop playtest.
 
-The current wizard retains the no-style-selector design but now defaults to the prior Punk Gallop behavior: Easy/Normal follow vocals, Hard follows drums, Oni is hybrid, and Punk Gallop's original mapping is used. Sliders reset to highway speed 101.343, big-note threshold 0.88, quiet-guitar threshold 0.25, 100% density, zero repeat-color inversion, and per-course fill-roll caps Easy/Normal/Hard/Oni = 3/3/0/0. Simulator backups are placed outside the selected `Songs` folder. The currently saved chart controls in `configs/wizard_settings.json` were reset to this baseline while preserving the chosen Songs/audio/MIDI folders. The `taiko_auto` profile remains available but is no longer the wizard default. Validation: all 61 project tests pass; Ruff flags only existing import-order and RUF015 findings in the arranger/test files touched by this work.
+### First files to inspect
+
+- `src/taikolab/ui/wizard.py` — launches the editor, keeps it single-instance, and handles the native existing-chart picker.
+- `src/taikolab/ui/tja_editor.py` — parses TJA, overlays edits, preserves original text/commands, and saves with a backup.
+- `src/taikolab/ui/server.py` and `src/taikolab/ui/embedded_server.py` — imported-chart API/session and local server client.
+- `src/taikolab/ui/static/index.html`, `app.js`, and `styles.css` — editor interface, imported-chart state, and mode-specific controls.
+- `tests/test_tja_editor.py` and `tests/test_song_wizard.py` — import/edit/save behavior, wizard picker navigation, and editor lifecycle.
+- `run_app.bat` — desktop launcher; `run_build.bat` rebuilds from cached analysis and is not the app launcher.
+- `README.md` and this handover — launcher/editor usage and current project context.
+
+The working tree currently contains uncommitted local changes. Inspect `git status --short` before editing, preserve unrelated work, and do not reset or discard these changes.
+
+## Automatic charting context (background)
+
+Dumpweed timing was playtested and accepted; its separate variety test was judged good enough for now. The Leaving Song Part II uses the alt-rock profile and shared highway speed; its quiet-guitar intro safeguard was added and the user confirmed the result works well.
+
+The Kill the Poor pickup/export issue is fixed and its chart is ready for playtesting. The user found it satisfying but too repetitive, with a strict kick-to-Don / snare-to-Ka mapping. Holiday in Cambodia's Hard chart is a good baseline but also repeats; Voyeur has the same repetition concern. BYOB was not quite on point, Slipknot's Eyeless did not chart well, and audio-only charting usually fails. Deeper multi-bar repetition detection remains a follow-up.
+
+The user heard phrase-end drift in Foo Fighters' Everlong and over-fast slow outros in Police Truck and All His Suits Are Torn. The timing experiment substantially improved Everlong's MIDI/audio kick-snare alignment and fixed a false fast outro in Police Truck. Validation was run in temporary directories; existing workspace analyses and TJA files were not replaced and still need regeneration/playtesting before promotion.
+
+The wizard has no style selector and defaults to the prior Punk Gallop behavior: Easy/Normal follow vocals, Hard follows drums, and Oni is hybrid. Slider defaults are highway speed 101.343, big-note threshold 0.88, quiet-guitar threshold 0.25, 100% density, zero repeat-color inversion, and fill-roll caps Easy/Normal/Hard/Oni = 3/3/0/0. Simulator backups are outside the selected `Songs` folder. The `taiko_auto` profile remains available but is not the wizard default.
 
 ## Kill the Poor export failure and fix
 
@@ -26,7 +46,7 @@ The user reports that the Hope chart is mostly playable but drifts in the middle
 
 ## Automatic song wizard
 
-The current implementation adds a native, dark Tkinter desktop wizard for creating `-auto` charts without Gemini/OpenAI or cloud audio processing. Start it from the repository root with `.\scripts\run_wizard.ps1`, or run `taikolab-wizard` from the installed project environment. Install its optional desktop dependencies with `.\.venv\Scripts\python.exe -m pip install -e ".[desktop]"`.
+The current implementation adds a native, dark Tkinter desktop wizard for creating `-auto` charts without Gemini/OpenAI or cloud audio processing. Double-click `run_app.bat` to open the app; it calls `scripts\run_wizard.ps1`. You can also launch it from the repository root with `.\scripts\run_wizard.ps1`, or run `taikolab-wizard` from the installed project environment. `run_build.bat` is only for rebuilding a chart from cached analysis and does not open the app. Install wizard dependencies with `.\.venv\Scripts\python.exe -m pip install -e ".[desktop]"`; the manual editor additionally needs the `ui` extra and Microsoft Edge WebView2 Runtime.
 
 The wizard requires one audio file (MP3, OGG, WAV, or FLAC) and accepts an optional MIDI file. GP is intentionally not an input: TaikoLab does not parse Guitar Pro files. The wizard reads local title/artist tags with Mutagen, then suggests a title/artist from a common `artist - title` filename if tags are absent. The user must confirm or edit both values. It adds `-auto` to the in-game title and creates a filesystem-safe artist/title ID ending in `-auto`; name conflicts offer a separate numbered ID or an explicit replacement with backups.
 
@@ -40,33 +60,35 @@ The wizard's build manifest records non-secret source names, metadata origin, pr
 
 The wizard defaults to the `punk_gallop` profile rather than presenting a genre selector. Per-course source choices map to existing modes: Automatic, Drums, Balanced (hybrid), Vocals, and Guitar. In addition to density and source mode, the UI collects highway speed, big-note sensitivity, quiet-guitar threshold/treatment, Hard/Oni repeat variation, and a fill-roll cap for each course. Each slider resets independently to the legacy baseline: highway speed 101.343, big-note threshold 0.88, quiet-guitar threshold 0.25, density 100%, Hard/Oni repeat variation 0%, and roll caps 3/3/0/0. The Tkinter wizard's saved chart-control preferences were updated to these values. Values are remembered in ignored `configs/wizard_settings.json` and written into each song's `overrides.json`; the CLI applies those overrides during arrangement/export. Highway speed changes scroll only. Density is a cap and cannot add source events. Repeat variation only recolors eligible existing hits, and the current detector recognizes adjacent identical one-measure patterns rather than longer/non-adjacent phrases. Fill rolls are gameplay rolls, not MIDI drumroll transcription; no balloon-roll control is exposed. Source modes are available per course so removing genre selection does not remove its key source-following behavior.
 
-## Manual chart editor: readiness and next phase
+## Manual chart editor: current implementation
 
-The browser UI in `src/taikolab/ui/static/` is already a useful editor foundation, not a blank prototype. `index.html` and `app.js` provide WaveSurfer music/stem playback, seek/loop controls, a scrolling Taiko lane, generated Don/Ka hitsounds, course selection, section controls, and per-note cycling/add/delete. The Python FastAPI backend in `src/taikolab/ui/server.py` loads `analysis.json`, runs the existing arranger, persists `note_edits` to `overrides.json`, and exports through the existing TJA writer. The current edit contract is grid-based (`difficulty:measure:slot`), which suits fine-tuning a decent automatic chart.
+The Tkinter wizard's **Open Manual Editor** button is available at launch; it opens the last built chart when available, or opens the editor without a chart so the user can choose an existing TJA. A new build is not required to edit a previous chart. The existing browser UI and Python API are reused; the editor does not replace the automatic build pipeline. Its FastAPI server binds only to `127.0.0.1`, chooses a free port, and is stopped when the editor or wizard closes. Embedding requires Windows, the `tkwebview` package from the `ui` extra, and the Microsoft Edge WebView2 Runtime. Install both wizard and editor dependencies with `.\.venv\Scripts\python.exe -m pip install -e ".[ui,desktop]"`.
 
-Important gaps before calling this a complete charter: the browser currently receives only a count of detected drum hits, not their events, so it cannot draw the requested MIDI ghost-hit reference; empty-grid clicks add only Don; and the editor has no dedicated drag-to-move, undo/redo, or deliberate drumroll/balloon authoring workflow. The Python model and exporter cover Taiko note codes and timing, but edit validation and a richer editing contract are still needed for those operations. The browser playback already solves the difficult audio-preview requirement; rewriting WaveSurfer and the live lane in Tkinter would duplicate working behavior.
+The embedded editor is single-instance within the wizard. Earlier repeated open calls created another packed Tk frame each time while the wizard retained references only to the newest frame; returning to the builder could therefore reveal older editor frames underneath it, as in the user's screenshot. `_show_editor` now raises the existing editor frame and returns instead of creating another WebView. Restart the app after updating so any already-stacked frames from an older running version are cleared. A regression test covers reopening an active editor.
 
-Recommended next phase:
+The editor toolbar's **Open Existing TJA…** action opens a native file picker and loads that chart directly; it does not require `analysis.json` or rerun audio/MIDI analysis. In imported-chart mode, controls that would only modify generated-chart settings (tap capture, section rebuilding, global offset, and preset selection) are hidden or disabled. The importer supports single-branch Taiko courses (Easy, Normal, Hard, Oni, Edit) with standard note codes 0–8 and preserves the selected file's original metadata, timing commands, and formatting while changing note rows. Unsupported branching charts are rejected with an explicit error. If the TJA `WAVE` file is beside the chart, it is used for preview playback. **Save TJA** updates the selected file and creates `<filename>.tja.bak` before its first save. Imported sessions last for the current app run; select the file again after restarting.
 
-1. Keep `analysis.json` immutable and make edits an explicit overlay on the auto chart. Add a read-only reference lane/toggle for MIDI-origin drum hits (kick/snare/tom class and original time), separate from the playable Taiko notes. Extend the Python response with only the event data the editor needs.
-2. Refine the existing grid editor: add all common note types, make add/cycle/delete actions obvious, and add undo/redo. Keep the first milestone focused on adjusting existing grid cells; do not make a full free-position chart authoring system yet.
-3. Keep music and reference hits synchronized with the existing WaveSurfer playhead and loop selection. Add a preview mix control for music, playable Taiko hitsounds, and optional ghost-hit clicks; do not alter source timing when changing chart notes.
-4. Save edits to the song's existing override file, show the auto baseline separately from edits, and allow rebuild/export without replacing the input analysis or MIDI. Add tests for edit persistence, note-code validation, reference-event serialization, and TJA output.
-5. Connect the Tkinter wizard to this editor with a **Fine-tune chart** action that opens the local editor for the selected song. Reuse the current browser UI and Python API first; evaluate embedding it in a WebView only if launching the local editor window feels too disconnected and the Windows WebView dependency can be reliably packaged.
-6. Add paired, validated roll/balloon authoring only after single-hit edits and undo/redo are stable; keep malformed or unclosed roll markers from reaching the TJA writer.
+The wide editor keeps WaveSurfer audio/stem playback, seek/loop controls, chart hitsounds, and course selection. Its Taiko lane separates playable notes from a read-only MIDI ghost-hit lane (only analysis events whose source is `tab` are shown). The MIDI-reference toggle and volume are independent of chart clicks. The playable lane supports Don, Ka, Big Don, Big Ka, drag-to-move, right-click/Delete removal, and click-drag creation of drumrolls and balloons. Balloon hit counts are editable per course. Unclosed, overlapping, and unmatched balloon markers are rejected before TJA output.
 
-This is ready to start as a focused manual-editor sprint because song loading, audio playback, grid rendering, manual note overrides, Python arrangement, and TJA export already exist. The key first design decision should be the ghost-hit presentation (overlay or separate lane); the underlying data should remain time-based and read-only.
+Snapping is on by default and can be toggled. The grid selector chooses the snapped subdivision; with snapping off, placement uses a 1/64-measure grid and the arranger expands the affected TJA measure to preserve that position. Undo/redo is available through buttons, Ctrl+Z, Ctrl+Y, and Ctrl+Shift+Z. Space toggles playback; Ctrl+S exports; Delete removes the selection; arrows seek; Home/End jump; +/- zoom; Escape cancels a drag; A/D/K/R/B select editing tools; S toggles snap; Numpad 0 records downbeats. The editor includes an on-screen shortcut list and explanatory tooltips.
 
-The input consolidation is reflected in the current tree: the six historical BYOB, Dumpweed, and Leaving Song MIDI/GP reference files now live under their respective `workspace/<song>/sources/` folders. `incoming_midi/` is not used automatically by the build scripts; the user currently keeps several new MIDI inputs there for selection in the wizard. The original Hope and Kill the Poor MIDI files remain untouched in that folder. The Kill the Poor MIDI was copied to `workspace/dead-kennedys-kill-the-poor-auto/input.mid` by the wizard, aligned, and used for the chart described above. The historical GP files are preserved as references only; the working importer uses MIDI, not GP. `scripts/run_tab.ps1` now copies its selected MIDI to the song folder as `input.mid`; optional `-Audio` copies an audio source to a standardized `audio.<ext>` name before the import. If either normalized working file would be replaced with different content, the old copy is backed up under that song's `sources/` folder. `scripts/run_wizard.ps1` launches the new UI.
+For a generated chart, edits remain an explicit overlay in `overrides.json`; they do not overwrite the source MIDI or replace its aligned drum-hit events. Export uses the existing arrangement and TJA writer, validates roll/balloon markers, and writes the result to the configured YataiDON/OpenTaiko Songs folder. Imported-TJA mode instead saves directly to the selected source file as described above. Focused API coverage checks MIDI reference serialization, unsnapped 1/64 edits, valid balloon output, and rejection of an unclosed balloon.
 
-Focused wizard tests live in `tests/test_song_wizard.py` and cover safe IDs, path normalization, source staging, preference overlay, local tag parsing, Audiometa request/response behavior, manifest contents, keyring use, and failed-replacement recovery. The six migrated historical source files were compared byte-for-byte with their original Git blobs. The desktop extra adds only `keyring` and `mutagen`; it has been installed in the repository `.venv`. The Tk window now opens at 920x1040 and has an 800x700 minimum size, with a scrollable content area for shorter screens. Ruff checks pass when excluding pre-existing RUF046/RUF015 findings in the arranger and test file. The full suite reports 49 passed and one unrelated pre-existing failure: `tests/test_tab_sync.py::test_isolated_drum_warp_tracks_smooth_drift` imports `_estimate_isolated_drum_warp`, which is not present in the unchanged `src/taikolab/ingest/tab_sync.py`. Do not attribute that failure to this fix.
+The user explicitly deferred the visual toolbox redesign. Keep that out of the current scope; first let them playtest opening and editing existing charts.
+
+Validation completed for this implementation: the full suite passes 67 tests; Ruff and `node --check` pass for the imported-chart changes; the importer parsed existing Everlong, Holiday in Cambodia, and Dumpweed TJA files; an embedded-server smoke test opened Everlong and returned all four courses/660 measures; and tests verify unedited files remain byte-for-byte unchanged, edited TJA saves with a backup, and branch charts are rejected. The Tk wizard's existing-chart picker/navigation, editor singleton, and opening without a build have regression coverage. The WebView widget rendered/resized/closed in a standalone smoke test; browser interaction verified note creation, Ctrl+Z/Ctrl+Y, unsnapped balloon drawing, and successful TJA export. Audio playback and real-song/focus behavior still need a user-side playtest in the installed desktop environment.
+
+## Source organization note
+
+The six historical BYOB, Dumpweed, and Leaving Song MIDI/GP references live under their respective `workspace/<song>/sources/` folders. `incoming_midi/` is not used automatically; it is a user-managed selection folder. The original Hope and Kill the Poor MIDI files remain there. The Kill the Poor MIDI was copied to `workspace/dead-kennedys-kill-the-poor-auto/input.mid` by the wizard and used for its chart. GP files are references only; the working importer uses MIDI, not GP. `scripts/run_tab.ps1` copies its selected MIDI to the song folder as `input.mid`; optional `-Audio` copies an audio source to standardized `audio.<ext>` before import. If either normalized file would be replaced with different content, the old copy is backed up under that song's `sources/` folder.
 
 ## Gemini handoff: project map and workflow
 
-This section is intended to give a fresh AI instance enough context to continue without relying on this chat. Read this file before changing charts. Treat generated chart/audio files as user data: do not overwrite or delete unrelated songs in the large YataiDON library.
+This section is intended to give a fresh AI instance (Gemini 4 Hydrogen) enough context to continue without relying on this chat. Read the current-status and manual-editor sections first, then consult this project map. Treat generated chart/audio files as user data: do not overwrite or delete unrelated songs in the large YataiDON library.
 
 ```text
 TaikoLab/
+|-- run_app.bat                     Double-click launcher for the desktop app
 |-- run_build.bat                   Double-click launcher for cached-analysis rebuilds
 |-- configs/
 |   |-- default_settings.yaml       Global offsets, tempo deadzone, highway speed, quiet-guitar threshold
@@ -96,17 +118,23 @@ TaikoLab/
 |   |   |-- tab_sync.py             MIDI parsing and audio/stem alignment
 |   |   |-- drum_dsp.py             Isolated-stem drum transient detection
 |   |   `-- pipeline.py
-|   |-- ui/server.py                UI arrangement/export path
+|   |-- ui/
+|   |   |-- wizard.py               Tkinter workflow, editor lifecycle, native TJA picker
+|   |   |-- embedded_server.py      Local embedded-editor server client
+|   |   |-- server.py               FastAPI build and imported-TJA endpoints
+|   |   |-- tja_editor.py           TJA import, edit overlay, preservation, and saving
+|   |   `-- static/                 Embedded editor HTML, JavaScript, and CSS
 |   |-- cli.py                      CLI arrangement/export path
 |   |-- config.py                   Settings and preset models
 |   |-- metadata.py                 Local audio tags, Audiometa lookup, secure API-key access
 |   |-- song_setup.py               Safe IDs, Songs-folder normalization, input staging, manifest
-|   |-- ui/wizard.py                Tkinter song creation and build/export workflow
 |   `-- schemas.py
 |-- tests/
 |   |-- test_exporter_and_arranger.py
 |   |-- test_ingest_dsp_and_pipeline.py
 |   `-- test_tab_sync.py
+|   |-- test_song_wizard.py         Wizard, editor lifecycle, and existing-TJA picker tests
+|   `-- test_tja_editor.py          Imported chart parsing/edit/save tests
 |-- workspace/
 |   |-- byob/sources/               Historical MIDI and GP references
 |   |-- dumpweed/sources/           Historical MIDI and GP references
@@ -127,6 +155,8 @@ YataiDON-Windows/Songs/
 `-- TaikoLab_Dumpweed_*_Test/       Earlier isolated timing/variety tests
 ```
 
+The project map above highlights the current editor path. For existing `.tja` work, start with the "Manual chart editor: current implementation" section and its listed files; do not use old pre-editor design notes. The auto-build steps below apply to generated charts, not imported TJA sessions.
+
 ### Build path and source-of-truth
 
 1. `scripts/run_tab.ps1` calls `taikolab.cli import-tab`.
@@ -135,6 +165,8 @@ YataiDON-Windows/Songs/
 4. `tja_writer.py` serializes continuous BPM/meter timing, `OFFSET`, `#SCROLL`, and note rows, then copies the TJA and `WAVE` file to `YataiDON-Windows/Songs/<song>/`.
 
 The MIDI is the chart-note and tempo source. Audio/stems position that MIDI on the recording; they do not supply a second set of chart notes. GP files are not consumed by the current importer, so never claim the GP was programmatically weighed against the MIDI.
+
+Existing TJA editing is a separate path: the picker creates an in-memory imported session, the editor applies note/roll/balloon changes to the parsed chart baseline, and Save TJA writes back to the selected file with a first-save backup. It does not rerun alignment or the generated-chart build pipeline.
 
 For quick regeneration from a verified cached analysis, use `.venv\\Scripts\\python.exe -m taikolab.cli arrange --song <song-id> --preset <preset>`. Use `run_tab.ps1` only when intentionally re-running MIDI/audio alignment. Do not pass a manual offset unless listening evidence calls for it.
 
@@ -324,7 +356,9 @@ MIDI contains instructions and timing, not instrument audio. TaikoLab currently 
 
 The user owns FL Studio 2026 and asked whether its sounds can supply the renderer. Image-Line's [DirectWave manual](https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/plugins/DirectWave.htm) says the full DirectWave version imports SoundFont2 (`.sf2`), while DirectWave Player is limited to DirectWave formats; full DirectWave availability depends on edition/purchase. Do not assume the user's installation includes an `.sf2` file. A possible general-purpose GM candidate to evaluate is [GeneralUser GS](https://www.schristiancollins.com/generaluser.php), from its author; it is a broad GM set rather than a dedicated rock-only bank. Test its overdriven/distortion guitar, bass, and drum-kit patches against a sample MIDI, and confirm the archive's license before bundling or redistributing it. [FluidSynth](https://www.fluidsynth.org/wiki/Download/) is a separate synthesizer with documented Windows support and could be evaluated for a local automated renderer.
 
-## Suggested next steps
+## Automatic-charting backlog (not the current task)
+
+These are parked follow-ups from the automatic charting work. The immediate priority remains the user's playtest of the existing-TJA editor; do not start these items unless the user asks to resume charting work.
 
 1. Regenerate Everlong and Police Truck into backed-up workspace copies and playtest the new maps/clicks before promoting them. Do not alter the accepted global offset based on the old cached TJA outputs.
 2. Playtest the generated charts with the new controls, especially roll clearance, source selection, density, and Hard/Oni differences. Current roll placement requires late-measure source-supported fills and an eighth-note clearance.

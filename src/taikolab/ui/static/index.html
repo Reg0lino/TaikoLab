@@ -18,7 +18,8 @@
     </div>
     <div class="top-controls">
       <label>Song
-        <select id="songSelect"></select>
+        <select id="songSelect" title="Choose an analyzed song in the current workspace.">
+        </select>
       </label>
       <label>Stem Audio
         <select id="stemSelect">
@@ -49,12 +50,22 @@
     <section class="card transport-bar">
       <div class="transport-left">
         <button id="btnPlay" class="btn-accent">Play (Space)</button>
-        <button id="btnLoopSec">Loop Section</button>
+        <button id="btnLoopSec" title="Loop the currently selected song section.">Loop Section</button>
         <span id="timeReadout" class="mono">0:00.00 / 0:00.00</span>
-        <label class="inline-check"><input type="checkbox" id="chkHitsounds" checked /> Hitsounds</label>
+        <label class="inline-check" title="Play Taiko clicks for the active chart notes while the music plays.">
+          <input type="checkbox" id="chkHitsounds" checked /> Chart clicks
+        </label>
+        <label class="inline-check" title="Play a distinct reference click for each supplied MIDI drum hit. This is a listening aid, not a chart edit.">
+          <input type="checkbox" id="chkReferenceClicks" /> MIDI reference
+        </label>
+        <label class="mixer-lbl" title="Set the volume of MIDI reference clicks independently from the music and chart clicks.">
+          Ref level
+          <input type="range" id="referenceVol" min="0" max="1" step="0.05" value="0.8" />
+          <span id="lblReferenceVol">80%</span>
+        </label>
         <label class="mixer-lbl">Music <input type="range" id="musicVol" min="0" max="1" step="0.05" value="0.55" /> <span id="lblMusicVol">55%</span></label>
         <label class="mixer-lbl">Hits <input type="range" id="hitVol" min="0" max="2" step="0.05" value="1.35" /> <span id="lblHitVol">135%</span></label>
-        <label>Speed
+        <label title="Slow playback to inspect timing. Playback speed does not alter chart timing.">Speed
           <select id="speedSelect">
             <option value="0.5">0.50x</option>
             <option value="0.75">0.75x</option>
@@ -63,21 +74,21 @@
         </label>
       </div>
       <div class="transport-right">
-        <span class="label-sm">Global Offset:</span>
+        <span class="label-sm" title="Shift the playable chart against the audio. The MIDI ghost reference remains on its aligned source timeline.">Global Offset:</span>
         <button class="nudge-global" data-ms="-25">-25ms</button>
         <button class="nudge-global" data-ms="-5">-5ms</button>
         <input type="number" id="globalOffsetInput" step="1" value="0" style="width:68px" />
         <span class="label-sm">ms</span>
         <button class="nudge-global" data-ms="5">+5ms</button>
         <button class="nudge-global" data-ms="25">+25ms</button>
-        <button id="btnSplitHere" class="btn-warn">Split Section at Playhead</button>
+        <button id="btnSplitHere" class="btn-warn" title="Split the selected song section at the current playhead.">Split Section at Playhead</button>
       </div>
     </section>
 
     <!-- Numpad 0 Tap-Tempo & Downbeat Studio Bar -->
     <section class="card tap-bar">
       <div class="tap-left">
-        <button id="btnArmTap" class="btn-rec">Record Downbeats [Numpad 0]</button>
+        <button id="btnArmTap" class="btn-rec" title="Record song bar downbeats with Numpad 0. Tap the first beat of each measure, then click again to finish.">Record Downbeats [Numpad 0]</button>
         <label class="inline-check" title="Replace only bars inside your new tap window instead of wiping the whole song">
           <input type="checkbox" id="chkPunchIn" checked /> Punch-In Overdub
         </label>
@@ -89,8 +100,8 @@
           <input type="number" id="tapLatencyInput" value="-20" step="5" style="width:62px" />
           <span class="label-sm">ms</span>
         </label>
-        <button id="btnSeedTaps" title="Populate tapped markers from current chart barlines so you only fix bad spots">Seed from Current Bars</button>
-        <button id="btnSnapTaps" class="btn-warn" title="Snap human taps (+/-45ms) onto exact waveform kick/snare/guitar attacks">Magnet-Snap (&plusmn;45ms)</button>
+        <button id="btnSeedTaps" title="Copy current chart barlines into the downbeat editor so you can adjust only the bars that are wrong.">Seed from Current Bars</button>
+        <button id="btnSnapTaps" class="btn-warn" title="Move each tapped downbeat to the strongest nearby drum or guitar transient, within 45 ms. This changes timing markers, not chart-note editing snap.">Magnet-Snap (&plusmn;45ms)</button>
         <button id="btnStraightenTaps" title="Flatten small human jitter inside steady sections into clean constant BPM">Straighten Steady BPM</button>
         <button id="btnFillGaps" title="Split any 2x bar gap where you skipped one tap">Fill 2x Gaps</button>
         <label class="mixer-lbl">Bar Meter
@@ -113,20 +124,70 @@
       <div class="lane-header">
         <div>
           <strong>Real-Time Taiko Lane</strong>
-          <span class="hint">Click note = cycle (Don &rarr; Kat &rarr; Big Don &rarr; Big Kat &rarr; Delete) &bull; Click empty grid tick = add Don &bull; Right-click = delete</span>
+          <span class="hint">Drag to move &bull; Select a note and use the active tool to replace it &bull; Right-click/Delete removes a note</span>
         </div>
         <div class="lane-tools">
-          <label>Zoom <input type="range" id="laneZoom" min="180" max="620" value="340" /></label>
-          <button id="btnResetEdits">Reset Note Edits</button>
+          <label title="Increase the horizontal time scale to edit a smaller passage; decrease it to see more of the song.">Zoom <input type="range" id="laneZoom" min="180" max="620" value="340" /></label>
+          <label class="inline-check" title="On: snap edits to the selected musical grid. Off: use a 1/64-measure placement grid; exported TJA still requires representable measure subdivisions.">
+            <input type="checkbox" id="snapToggle" checked /> Snap
+          </label>
+          <label title="Subdivision used when Snap is on. Auto uses the generated chart grid.">
+            Grid
+            <select id="editGrid">
+              <option value="chart" selected>Auto</option>
+              <option value="8">1/8</option>
+              <option value="16">1/16</option>
+              <option value="32">1/32</option>
+              <option value="64">1/64</option>
+            </select>
+          </label>
+          <label title="Choose what a click on an empty position adds. Roll and balloon tools use click-drag to set their full span.">
+            Tool
+            <select id="editTool">
+              <option value="select" selected>Select</option>
+              <option value="1">Don</option>
+              <option value="2">Ka</option>
+              <option value="3">Big Don</option>
+              <option value="4">Big Ka</option>
+              <option value="5">Drumroll</option>
+              <option value="7">Balloon</option>
+            </select>
+          </label>
+          <label id="balloonCountControl" title="Required number of hits to clear a balloon. Applied to the selected course's balloon rolls.">
+            Balloon hits
+            <input id="balloonCount" type="number" min="1" max="1000" step="1" value="10" />
+          </label>
+          <button id="btnUndo" title="Undo the most recent chart edit (Ctrl+Z).">Undo</button>
+          <button id="btnRedo" title="Redo the last undone chart edit (Ctrl+Y).">Redo</button>
+          <button id="btnHelp" title="Show the editing and playback keyboard shortcuts.">Shortcuts</button>
+          <button id="btnResetEdits" title="Remove all manual edits for this course and restore its generated notes.">Reset Course</button>
         </div>
       </div>
-      <canvas id="taikoCanvas" width="1200" height="145"></canvas>
+      <div id="shortcutPanel" class="shortcut-panel hidden">
+        <strong>Keyboard shortcuts</strong>
+        <span><kbd>Space</kbd> Play / pause</span>
+        <span><kbd>Ctrl</kbd>+<kbd>Z</kbd> Undo</span>
+        <span><kbd>Ctrl</kbd>+<kbd>Y</kbd> Redo</span>
+        <span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> Redo</span>
+        <span><kbd>Ctrl</kbd>+<kbd>S</kbd> Save and export</span>
+        <span><kbd>Delete</kbd> Delete selected note or roll</span>
+        <span><kbd>Left</kbd> / <kbd>Right</kbd> Seek 0.1 seconds</span>
+        <span><kbd>Shift</kbd>+<kbd>Left</kbd> / <kbd>Right</kbd> Seek 1 second</span>
+        <span><kbd>Home</kbd> / <kbd>End</kbd> Song start / end</span>
+        <span><kbd>+</kbd> / <kbd>-</kbd> Zoom in / out</span>
+        <span><kbd>Esc</kbd> Cancel the current selection or drag</span>
+        <span><kbd>A</kbd> Select &bull; <kbd>D</kbd> Don &bull; <kbd>K</kbd> Ka &bull; <kbd>R</kbd> Roll &bull; <kbd>B</kbd> Balloon</span>
+        <span><kbd>S</kbd> Toggle grid snap</span>
+        <span><kbd>Numpad 0</kbd> Record a downbeat while recording</span>
+        <span>Text fields keep their normal typing shortcuts.</span>
+      </div>
+      <canvas id="taikoCanvas" width="1600" height="260"></canvas>
       <div id="diagBar" class="diag-bar mono"></div>
     </section>
 
     <!-- WaveSurfer Waveform + Regions + Downbeat Markers -->
     <section class="card wave-card">
-      <div id="waveform"></div>
+      <div id="waveform" title="Click or drag the waveform to seek. Gold lines are bar downbeats; colored blocks mark song sections."></div>
       <div id="waveTimeline"></div>
       <div class="hint" style="margin:6px 0 0 0">Gold lines = Downbeat Barlines (drag to adjust, double-click gold line to delete) &bull; Colored zones = Song Sections</div>
     </section>
@@ -147,10 +208,10 @@
           <span id="secRangeBadge" class="mono badge"></span>
         </div>
         <div id="inspectorBody" class="inspector-grid">
-          <label>Label
+          <label title="Short name shown in the section list.">Label
             <input type="text" id="secLabel" />
           </label>
-          <label>Follow Mode
+          <label title="Choose which detected musical events guide regeneration of this section.">Follow Mode
             <select id="secFollow">
               <option value="auto">Auto (Smart)</option>
               <option value="drums">Drums (Kick=Don / Snare=Kat)</option>
@@ -201,7 +262,7 @@
             <label class="inline-check"><input type="checkbox" id="secFoldRolls" checked /> Fold Blasts to Rolls</label>
           </div>
           <div class="inspector-actions">
-            <button id="btnApplySection" class="btn-accent">Rebuild Section</button>
+            <button id="btnApplySection" class="btn-accent" title="Apply section settings and regenerate the section while keeping saved manual note edits.">Rebuild Section</button>
             <button id="btnDeleteSection" class="btn-danger">Merge With Previous</button>
           </div>
         </div>

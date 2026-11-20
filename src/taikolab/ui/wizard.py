@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import queue
 import shutil
 import subprocess
@@ -13,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+from urllib.parse import quote
 
 from taikolab.config import load_config, load_wizard_preferences, save_wizard_preferences
 from taikolab.metadata import (
@@ -31,6 +31,7 @@ from taikolab.song_setup import (
     stage_song_inputs,
     write_build_manifest,
 )
+from taikolab.ui.embedded_server import EmbeddedEditorServer
 
 _BACKGROUND = "#11161c"
 _SURFACE = "#1a222c"
@@ -130,6 +131,37 @@ def _style_dark(root: tk.Tk) -> None:
     root.option_add("*TCombobox*Listbox.selectBackground", "#285b87")
     root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
     root.option_add("*TCombobox*Listbox.relief", "flat")
+
+
+class ToolTip:
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self.widget = widget
+        self.text = text
+        self.window: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, _event: tk.Event) -> None:
+        if self.window is not None:
+            return
+        x = self.widget.winfo_rootx() + 12
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self.window = tk.Toplevel(self.widget)
+        self.window.wm_overrideredirect(True)
+        self.window.wm_geometry(f"+{x}+{y}")
+        ttk.Label(
+            self.window,
+            text=self.text,
+            justify="left",
+            wraplength=420,
+            padding=8,
+            style="Muted.TLabel",
+        ).pack()
+
+    def _hide(self, _event: tk.Event) -> None:
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
 
 
 class TaikoWizard:
@@ -244,6 +276,12 @@ class TaikoWizard:
         self.suggestions: list[TrackSuggestion] = []
         self.metadata_source = "manual"
         self._build_running = False
+        self.last_built_song_id: str | None = None
+        self.editor_server = EmbeddedEditorServer()
+        self.editor_view: ttk.Frame | None = None
+        self.editor_webview: tk.Widget | None = None
+        self.editor_title_label: ttk.Label | None = None
+        self._com_initialized = False
 
         root.title("TaikoLab Auto Chart Builder")
         root.geometry("920x1040")
@@ -251,6 +289,9 @@ class TaikoWizard:
         root.configure(background=_BACKGROUND)
         _style_dark(root)
         self._build_widgets()
+        # Refocus Tk controls because the embedded WebView2 surface owns a native child window.
+        root.bind_all("<Button-1>", self._focus_editor_control, add="+")
+        root.protocol("WM_DELETE_WINDOW", self._close_app)
         self._update_output_preview()
         self.title.trace_add("write", self._update_output_preview)
         self.artist.trace_add("write", self._update_output_preview)
@@ -259,6 +300,7 @@ class TaikoWizard:
     def _build_widgets(self) -> None:
         container = ttk.Frame(self.root)
         container.pack(fill="both", expand=True)
+        self.main_container = container
         canvas = tk.Canvas(container, background=_BACKGROUND, highlightthickness=0)
         scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -518,13 +560,29 @@ class TaikoWizard:
         buttons = ttk.Frame(outer)
         buttons.grid(row=9, column=0, sticky="ew", pady=(12, 0))
         buttons.columnconfigure(0, weight=1)
+        self.editor_button = ttk.Button(
+            buttons,
+            text="Open Manual Editor",
+            command=self._open_last_editor,
+        )
+        self.editor_button.grid(row=0, column=1, padx=(0, 8), sticky="e")
+        ToolTip(
+            self.editor_button,
+            "Open the last built chart, or open the editor now and choose an existing .tja file. "
+            "No new chart build is required to edit an existing file.",
+        )
         self.build_button = ttk.Button(
             buttons,
             text="Build and export chart",
             style="Accent.TButton",
             command=self._start_build,
         )
-        self.build_button.grid(row=0, column=1, sticky="e")
+        self.build_button.grid(row=0, column=2, sticky="e")
+        ToolTip(
+            self.build_button,
+            "Analyze the selected audio and optional MIDI, generate all four courses, "
+            "and export the chart to the selected YataiDON/OpenTaiko Songs folder.",
+        )
 
     def _add_slider(
         self,
@@ -1108,11 +1166,13 @@ class TaikoWizard:
             elif event == "complete":
                 self._finish_build()
                 song_dir = Path(value)
+                self.last_built_song_id = song_dir.name
+                self.editor_button.configure(state="normal")
                 if messagebox.askyesno(
                     "Chart ready",
-                    f"Chart built and exported successfully.\n\nSong folder:\n{song_dir}\n\nOpen the workspace song folder?",
+                    f"Chart built and exported successfully.\n\nSong folder:\n{song_dir}\n\nOpen the Manual Chart Editor now?",
                 ):
-                    os.startfile(str(song_dir))  # type: ignore[attr-defined]
+                    self._open_last_editor()
             elif event == "build_error":
                 self._finish_build()
                 messagebox.showerror(
@@ -1133,6 +1193,120 @@ class TaikoWizard:
         self.progress.stop()
         self.build_button.configure(state="normal")
         self.lookup_button.configure(state="normal")
+
+    def _open_last_editor(self) -> None:
+        self._show_editor(self.last_built_song_id or "")
+
+    def _show_editor(self, song_id: str) -> None:
+        if self.editor_view is not None:
+            self.editor_view.lift()
+            return
+
+        if sys.platform != "win32":
+            messagebox.showerror(
+                "Embedded editor unavailable",
+                "The embedded editor currently requires Windows and the Microsoft Edge WebView2 Runtime.",
+            )
+            return
+
+        try:
+            from tkwebview import TkWebview
+            from tkwebview.core import webview_exception
+
+            base_url = self.editor_server.start()
+        except (ImportError, OSError, RuntimeError, TimeoutError) as exc:
+            messagebox.showerror("Could not open Manual Editor", str(exc))
+            return
+
+        self.main_container.pack_forget()
+        self.root.minsize(1100, 700)
+        self.root.geometry("1600x950")
+        self.editor_view = ttk.Frame(self.root)
+        self.editor_view.pack(fill="both", expand=True)
+        toolbar = ttk.Frame(self.editor_view, padding=(10, 6))
+        toolbar.pack(fill="x")
+        ttk.Button(toolbar, text="Back to Builder", command=self._leave_editor).pack(side="left")
+        ttk.Button(toolbar, text="Open Existing TJA…", command=self._open_existing_tja).pack(
+            side="left", padx=(8, 0)
+        )
+        self.editor_title_label = ttk.Label(
+            toolbar,
+            text=f"Manual Chart Editor — {song_id}" if song_id else "Manual Chart Editor",
+            style="Section.TLabel",
+        )
+        self.editor_title_label.pack(side="left", padx=12)
+        try:
+            self.editor_webview = TkWebview(self.editor_view)
+            self.editor_webview.pack(fill="both", expand=True)
+            self.editor_webview.navigate(f"{base_url}/?song={quote(song_id)}")
+        except webview_exception as exc:
+            if self.editor_webview is not None:
+                self.editor_webview.destroy_webview()
+                self.editor_webview = None
+            self.editor_view.destroy()
+            self.editor_view = None
+            self.editor_title_label = None
+            self.main_container.pack(fill="both", expand=True)
+            self.root.geometry("920x1040")
+            self.root.minsize(800, 700)
+            messagebox.showerror(
+                "Could not open Manual Editor",
+                f"{exc}\n\nConfirm that the Microsoft Edge WebView2 Runtime is installed.",
+            )
+            return
+
+    def _open_existing_tja(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Open an existing Taiko chart",
+            filetypes=[("Taiko chart files", "*.tja")],
+        )
+        if not selected or self.editor_webview is None:
+            return
+        path = Path(selected)
+        try:
+            import_id = self.editor_server.open_tja(path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            messagebox.showerror("Could not open chart", str(exc))
+            return
+        if self.editor_server.url is None:
+            messagebox.showerror("Could not open chart", "The local editor server is not running.")
+            return
+        if self.editor_title_label is not None:
+            self.editor_title_label.configure(text=f"Manual Chart Editor — {path.stem}")
+        self.editor_webview.navigate(
+            f"{self.editor_server.url}/?import_id={quote(import_id)}"
+        )
+
+    def _leave_editor(self) -> None:
+        if self.editor_webview is not None:
+            self.editor_webview.destroy_webview()
+            self.editor_webview = None
+        if self.editor_view is not None:
+            self.editor_view.destroy()
+            self.editor_view = None
+            self.editor_title_label = None
+        self.root.geometry("920x1040")
+        self.root.minsize(800, 700)
+        self.main_container.pack(fill="both", expand=True)
+
+    def _focus_editor_control(self, event: tk.Event) -> None:
+        if self.editor_view is None:
+            return
+        try:
+            event.widget.focus_force()
+        except tk.TclError:
+            pass
+
+    def _close_app(self) -> None:
+        try:
+            if self.editor_webview is not None:
+                self.editor_webview.destroy_webview()
+                self.editor_webview = None
+            self.editor_server.stop()
+        except (OSError, RuntimeError) as exc:
+            messagebox.showerror("Could not close cleanly", str(exc))
+            return
+        self.root.destroy()
 
 
 def main() -> None:

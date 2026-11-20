@@ -172,8 +172,16 @@ class SongOverrides(ChartControlSettings):
     tempo_anchors: list[TempoAnchor] = Field(default_factory=list)
     sections: list[SectionOverride] = Field(default_factory=list)
     note_edits: dict[str, int] = Field(default_factory=dict)
+    balloon_counts_by_course: dict[DifficultyLevel, list[int]] = Field(default_factory=dict)
     custom_downbeats: list[DownbeatMarker] = Field(default_factory=list)
     tap_latency_ms: float = Field(default=0.0, ge=-250.0, le=250.0)
+
+    @model_validator(mode="after")
+    def _validate_balloon_counts(self) -> SongOverrides:
+        for difficulty, counts in self.balloon_counts_by_course.items():
+            if any(count < 1 or count > 1000 for count in counts):
+                raise ValueError(f"Balloon counts for {difficulty} must be between 1 and 1000")
+        return self
 
 
 # ---------------------------------------------------------------------------

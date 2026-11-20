@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import statistics
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +16,19 @@ from taikolab.arranger.engine import arrange_song
 from taikolab.config import load_config
 from taikolab.exporters.diagnostics import analyze_course
 from taikolab.exporters.tja_writer import export_to_opentaiko, write_tja_file
-from taikolab.schemas import DownbeatMarker, SectionOverride, SongAnalysis, SongOverrides
+from taikolab.schemas import (
+    DownbeatMarker,
+    SectionOverride,
+    SongAnalysis,
+    SongOverrides,
+    TaikoNote,
+)
+from taikolab.ui.tja_editor import (
+    TjaDocument,
+    apply_tja_edits,
+    load_tja,
+    save_tja_edits,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -26,6 +39,7 @@ class ArrangeResponse(BaseModel):
     overrides: SongOverrides
     chart: dict
     diagnostics: list[dict]
+    reference_hits: list[dict]
     exported_path: str | None = None
 
 
@@ -42,6 +56,43 @@ class StraightenTapsRequest(BaseModel):
 
 class FillGapsRequest(BaseModel):
     taps: list[DownbeatMarker]
+
+
+class OpenTjaRequest(BaseModel):
+    path: str
+
+
+def _imported_chart_payload(
+    import_id: str,
+    document: TjaDocument,
+    overrides: SongOverrides,
+    exported_path: str | None = None,
+) -> ArrangeResponse:
+    chart = apply_tja_edits(document, overrides)
+    _validate_manual_rolls(chart)
+    duration = max(
+        (measure.end_sec for course in chart.courses for measure in course.measures),
+        default=0.0,
+    )
+    return ArrangeResponse(
+        song_id=import_id,
+        analysis_summary={
+            "title": chart.title,
+            "artist": chart.subtitle,
+            "duration_sec": duration,
+            "audio_path": str(document.audio_path) if document.audio_path else "",
+            "stems_available": ["mix"] if document.audio_path else [],
+            "drum_hits": 0,
+            "vocal_events": 0,
+            "guitar_events": 0,
+            "simulator_dir": "",
+        },
+        overrides=overrides,
+        chart=chart.model_dump(),
+        diagnostics=[vars(analyze_course(course)) for course in chart.courses],
+        reference_hits=[],
+        exported_path=exported_path,
+    )
 
 
 def snap_taps_to_transients(
@@ -196,6 +247,47 @@ def _default_sections_from_analysis(analysis: SongAnalysis) -> list[SectionOverr
     return merged
 
 
+def _validate_manual_rolls(chart) -> None:
+    for course in chart.courses:
+        active_roll = False
+        balloon_total = 0
+        for measure in course.measures:
+            for note in measure.notes:
+                if note in (
+                    TaikoNote.DRUMROLL.value,
+                    TaikoNote.BIG_DRUMROLL.value,
+                    TaikoNote.BALLOON.value,
+                ):
+                    if active_roll:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"{course.difficulty.title()} has overlapping roll markers",
+                        )
+                    active_roll = True
+                    balloon_total += note == TaikoNote.BALLOON.value
+                elif note == TaikoNote.END.value:
+                    if not active_roll:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"{course.difficulty.title()} has an end marker without a roll",
+                        )
+                    active_roll = False
+
+        if active_roll:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{course.difficulty.title()} has an unclosed roll or balloon",
+            )
+        if balloon_total != len(course.balloon_counts):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{course.difficulty.title()} has {balloon_total} balloon(s) but "
+                    f"{len(course.balloon_counts)} balloon count(s)"
+                ),
+            )
+
+
 def _build_chart_payload(song_id: str, overrides: SongOverrides | None = None, export_sim: bool = False) -> ArrangeResponse:
     cfg = load_config(overrides.preset if overrides else None)
     song_dir = cfg.song_dir(song_id)
@@ -228,6 +320,10 @@ def _build_chart_payload(song_id: str, overrides: SongOverrides | None = None, e
 
     cfg = load_config(overrides.preset or cfg.preset.name)
     chart = arrange_song(analysis, cfg, overrides=overrides)
+    for course in chart.courses:
+        if course.difficulty in overrides.balloon_counts_by_course:
+            course.balloon_counts = overrides.balloon_counts_by_course[course.difficulty]
+    _validate_manual_rolls(chart)
     tja_path = song_dir / f"{song_id}.tja"
     write_tja_file(
         chart,
@@ -268,12 +364,22 @@ def _build_chart_payload(song_id: str, overrides: SongOverrides | None = None, e
         overrides=overrides,
         chart=chart.model_dump(),
         diagnostics=diag,
+        reference_hits=[
+            {
+                "time_sec": hit.time_sec,
+                "drum_class": hit.drum_class,
+                "velocity": hit.velocity,
+            }
+            for hit in analysis.drum_hits
+            if hit.source == "tab"
+        ],
         exported_path=exported_str,
     )
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="TaikoLab Director's Console")
+    imported_tja: dict[str, TjaDocument] = {}
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -281,6 +387,81 @@ def create_app() -> FastAPI:
     @app.get("/")
     def index():
         return FileResponse(str(STATIC_DIR / "index.html"))
+
+    @app.post("/api/import-tja")
+    def import_tja(req: OpenTjaRequest):
+        try:
+            document = load_tja(Path(req.path))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        import_id = uuid.uuid4().hex
+        imported_tja[import_id] = document
+        return {"import_id": import_id, "title": document.chart.title}
+
+    @app.get("/api/imported/{import_id}")
+    def get_imported_tja(import_id: str):
+        document = imported_tja.get(import_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="This imported chart session has expired; open the TJA again.")
+        overrides = SongOverrides(
+            song_id=import_id,
+            title=document.chart.title,
+            artist=document.chart.subtitle,
+            balloon_counts_by_course={
+                course.difficulty: course.balloon_counts
+                for course in document.chart.courses
+                if course.balloon_counts
+            },
+        )
+        return _imported_chart_payload(import_id, document, overrides)
+
+    @app.post("/api/imported/{import_id}/arrange")
+    def arrange_imported_tja(import_id: str, overrides: SongOverrides):
+        document = imported_tja.get(import_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="This imported chart session has expired; open the TJA again.")
+        if overrides.song_id != import_id:
+            raise HTTPException(status_code=422, detail="The edits do not match the opened TJA chart.")
+        try:
+            return _imported_chart_payload(import_id, document, overrides)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/imported/{import_id}/export")
+    def save_imported_tja(import_id: str, overrides: SongOverrides):
+        document = imported_tja.get(import_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="This imported chart session has expired; open the TJA again.")
+        if overrides.song_id != import_id:
+            raise HTTPException(status_code=422, detail="The edits do not match the opened TJA chart.")
+        try:
+            chart = apply_tja_edits(document, overrides)
+            _validate_manual_rolls(chart)
+            path = save_tja_edits(document, chart)
+            document = load_tja(path)
+            imported_tja[import_id] = document
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        saved_overrides = SongOverrides(
+            song_id=import_id,
+            title=document.chart.title,
+            artist=document.chart.subtitle,
+            balloon_counts_by_course={
+                course.difficulty: course.balloon_counts
+                for course in document.chart.courses
+                if course.balloon_counts
+            },
+        )
+        return _imported_chart_payload(import_id, document, saved_overrides, str(path))
+
+    @app.get("/api/imported/{import_id}/audio")
+    def stream_imported_audio(import_id: str):
+        document = imported_tja.get(import_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="This imported chart session has expired; open the TJA again.")
+        if document.audio_path is None:
+            raise HTTPException(status_code=404, detail="The TJA WAVE audio file was not found beside the chart.")
+        return FileResponse(str(document.audio_path))
 
     @app.get("/api/songs")
     def list_songs():
