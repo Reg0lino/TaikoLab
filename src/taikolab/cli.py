@@ -39,6 +39,7 @@ def _cmd_import_tab(args: argparse.Namespace) -> None:
         title=args.title,
         artist=args.artist,
         manual_offset_sec=args.offset,
+        use_stems=bool(getattr(args, "use_stems", False)),
     )
     _cmd_arrange(args)
 
@@ -63,7 +64,7 @@ def _cmd_arrange(args: argparse.Namespace) -> None:
     if not analysis.energy_curve:
         from taikolab.ingest.vocal_riff_tracker import ensure_energy_curve
 
-        if ensure_energy_curve(analysis):
+        if ensure_energy_curve(analysis, song_dir=song_dir):
             analysis_path.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
 
     overrides: SongOverrides | None = None
@@ -139,6 +140,7 @@ def main() -> None:
     p_tab.add_argument("--artist", default="Unknown")
     p_tab.add_argument("--preset", default=None)
     p_tab.add_argument("--offset", type=float, default=None, help="Optional manual lag override in seconds")
+    p_tab.add_argument("--use-stems", action="store_true", help="Run Demucs stem separation before MIDI alignment")
     p_tab.set_defaults(func=_cmd_import_tab)
 
     p_ar = sub.add_parser("arrange", help="Generate .tja quickly from cached analysis.json")

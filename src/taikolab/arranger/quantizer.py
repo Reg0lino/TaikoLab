@@ -35,9 +35,9 @@ def choose_grid_size(numerator: int, denominator: int, bpm: float) -> int:
     if numerator == 2 and denominator == 4:
         return 8
     if numerator == 3 and denominator == 4:
-        return 12
+        return 24 if bpm < 100.0 else 12
     if numerator == 4 and denominator == 4:
-        return 16
+        return 32 if bpm < 105.0 else 16
     return max(8, numerator * 4)
 
 

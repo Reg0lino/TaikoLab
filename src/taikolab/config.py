@@ -132,6 +132,8 @@ def save_wizard_preferences(
     last_audio_directory: str | None = None,
     last_midi_directory: str | None = None,
     chart_controls: dict[str, object] | None = None,
+    use_demucs_stems: bool | None = None,
+    append_version_tag: bool | None = None,
 ) -> Path:
     """Persist desktop-only settings without rewriting the commented YAML config."""
     prefs_path = root_dir / "configs" / "wizard_settings.json"
@@ -146,6 +148,10 @@ def save_wizard_preferences(
     if chart_controls is not None:
         controls = ChartControlSettings.model_validate(chart_controls)
         preferences["chart_controls"] = controls.model_dump(exclude_none=True)
+    if use_demucs_stems is not None:
+        preferences["use_demucs_stems"] = bool(use_demucs_stems)
+    if append_version_tag is not None:
+        preferences["append_version_tag"] = bool(append_version_tag)
 
     temp_path = prefs_path.with_suffix(".json.tmp")
     temp_path.write_text(json.dumps(preferences, indent=2) + "\n", encoding="utf-8")

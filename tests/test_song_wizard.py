@@ -517,3 +517,18 @@ def test_cli_arrange_handles_unicode_hyphen_on_cp1252_stdout(tmp_path: Path, mon
     cli_mod._cmd_arrange(types.SimpleNamespace(song="blink-unicode", preset="punk_gallop"))
     cp1252_stdout.flush()
     assert (song_dir / "blink-unicode.tja").exists()
+def test_v02_version_tag_and_wizard_toggles_roundtrip(tmp_path: Path):
+    shutil.copytree(Path(__file__).parents[1] / "configs", tmp_path / "configs")
+    (tmp_path / "pyproject.toml").touch()
+
+    assert TaikoWizard.format_chart_title("Dumpweed", True) == f"Dumpweed --auto{wizard_module.DEV_CHART_VERSION}"
+    assert TaikoWizard.format_chart_title("Dumpweed", False) == "Dumpweed -auto"
+
+    save_wizard_preferences(
+        tmp_path,
+        use_demucs_stems=False,
+        append_version_tag=True,
+    )
+    prefs = load_wizard_preferences(tmp_path)
+    assert prefs["use_demucs_stems"] is False
+    assert prefs["append_version_tag"] is True

@@ -41,6 +41,8 @@ let state = {
   selectedKeys: new Set(),
   selectedRollKeys: new Set(),
   clipboard: null,
+  sourceTjaPath: null,
+  activeProjectName: "",
   gridAnchorIdx: null,
   gridPreviewTimes: null,
   gridStatusText: "",
@@ -532,7 +534,7 @@ function updateSelectionUI() {
   updateGridUI();
 }
 
-const DEFAULT_ROLL_CAPS = { easy: 3, normal: 3, hard: 0, oni: 0, ura: 0 };
+const DEFAULT_ROLL_CAPS = { easy: 4, normal: 4, hard: 2, oni: 2, ura: 2 };
 
 function populateChartControls() {
   if (!state.data || state.importId) return;
@@ -621,6 +623,10 @@ function cloneEditState() {
     balloon_counts_by_course: state.data?.overrides?.balloon_counts_by_course || {},
     barline_times: state.data?.overrides?.barline_times || [],
     global_offset_ms: state.data?.overrides?.global_offset_ms ?? 0,
+    course_sources: state.data?.overrides?.course_sources || {},
+    disabled_courses: state.data?.overrides?.disabled_courses || [],
+    difficulty_overrides: state.data?.overrides?.difficulty_overrides || {},
+    fill_rolls_by_course: state.data?.overrides?.fill_rolls_by_course || {},
   }));
 }
 
@@ -642,6 +648,10 @@ function restoreEditState(snapshot) {
   state.data.overrides.balloon_counts_by_course = snapshot.balloon_counts_by_course || {};
   state.data.overrides.barline_times = snapshot.barline_times || [];
   state.data.overrides.global_offset_ms = snapshot.global_offset_ms ?? 0;
+  state.data.overrides.course_sources = snapshot.course_sources || {};
+  state.data.overrides.disabled_courses = snapshot.disabled_courses || [];
+  state.data.overrides.difficulty_overrides = snapshot.difficulty_overrides || {};
+  state.data.overrides.fill_rolls_by_course = snapshot.fill_rolls_by_course || {};
   document.getElementById("globalOffsetInput").value = state.data.overrides.global_offset_ms;
   clearSelection();
   state.editSeq += 1;
@@ -1128,7 +1138,39 @@ function readInspectorIntoSelected() {
   sec.fold_blasts_to_rolls = document.getElementById("secFoldRolls").checked;
 }
 
+const COURSE_LABELS = {
+  easy: "Easy",
+  normal: "Normal",
+  hard: "Hard",
+  oni: "Oni",
+  ura: "Ura / Edit",
+};
+
+function syncCourseDropdown() {
+  const courses = state.data?.chart?.courses || [];
+  const sel = document.getElementById("diffSelect");
+  const prev = sel.value;
+  sel.innerHTML = "";
+  for (const c of courses) {
+    const opt = document.createElement("option");
+    opt.value = c.difficulty;
+    opt.textContent = COURSE_LABELS[c.difficulty] || c.difficulty;
+    sel.appendChild(opt);
+  }
+  if (courses.some((c) => c.difficulty === prev)) {
+    sel.value = prev;
+  } else if (courses.length > 0) {
+    sel.value = courses[courses.length - 1].difficulty;
+  }
+  const active = getActiveCourse();
+  const starsInput = document.getElementById("courseStarsInput");
+  if (starsInput && active) {
+    starsInput.value = String(active.level_stars || 5);
+  }
+}
+
 function renderDiagnostics() {
+  syncCourseDropdown();
   const diff = document.getElementById("diffSelect").value;
   const d = (state.data?.diagnostics || []).find((x) => x.difficulty === diff);
   const bar = document.getElementById("diagBar");
@@ -1269,6 +1311,8 @@ function recordNumpadTap() {
 
 async function loadSong(songId) {
   state.importId = null;
+  state.sourceTjaPath = null;
+  state.activeProjectName = songId;
   state.lastRegionKey = "";
   state.viewTime = 0;
   state.gridAnchorIdx = null;
@@ -1320,9 +1364,10 @@ async function loadSong(songId) {
   initWaveSurfer(`/api/songs/${songId}/audio?stem=mix`);
 }
 
-async function loadImportedTja(importId) {
+async function loadImportedTja(importId, sourcePath = null) {
   state.importId = importId;
   state.songId = importId;
+  state.sourceTjaPath = sourcePath;
   state.lastRegionKey = "";
   state.viewTime = 0;
   state.gridAnchorIdx = null;
@@ -1334,6 +1379,8 @@ async function loadImportedTja(importId) {
     return;
   }
   state.data = await response.json();
+  state.sourceTjaPath = state.sourceTjaPath || state.data?.analysis_summary?.source_tja_path || null;
+  state.activeProjectName = state.data?.analysis_summary?.title || "imported-chart";
   state.referenceHits = [];
   state.editUndo = [];
   state.editRedo = [];
@@ -3434,5 +3481,313 @@ document.getElementById("btnResetEdits").addEventListener("click", () => {
 });
 
 document.getElementById("btnExport").addEventListener("click", () => rebuildChart(true));
+
+// --- Editable Star Rating (LEVEL) ---
+document.getElementById("courseStarsInput").addEventListener("change", (e) => {
+  if (!state.data) return;
+  const diff = document.getElementById("diffSelect").value;
+  const stars = Math.max(1, Math.min(12, Math.round(Number(e.target.value || "5"))));
+  e.target.value = String(stars);
+  saveUndoPoint();
+  if (!state.data.overrides.difficulty_overrides) state.data.overrides.difficulty_overrides = {};
+  const existing = state.data.overrides.difficulty_overrides[diff] || {};
+  state.data.overrides.difficulty_overrides[diff] = { ...existing, star_rating: stars };
+  state.editSeq += 1;
+  rebuildChart(false);
+});
+
+// --- Course Copy / Move / Delete Modal ---
+function renderCourseModal() {
+  if (!state.data) return;
+  const courses = state.data.chart.courses || [];
+  const diags = state.data.diagnostics || [];
+  const allDiffs = state.importId
+    ? ["easy", "normal", "hard", "oni", ...(courses.some((c) => c.difficulty === "ura") ? ["ura"] : [])]
+    : ["easy", "normal", "hard", "oni"];
+
+  const summary = document.getElementById("courseSummaryList");
+  summary.innerHTML = "";
+  for (const diff of allDiffs) {
+    const c = courses.find((item) => item.difficulty === diff);
+    const d = diags.find((item) => item.difficulty === diff);
+    const row = document.createElement("div");
+    row.className = "course-summary-row";
+    row.innerHTML = `<strong>${COURSE_LABELS[diff] || diff}</strong><span class="mono">${
+      c ? `${c.level_stars}★ · ${d ? d.total_notes : 0} notes` : "Not present"
+    }</span>`;
+    summary.appendChild(row);
+  }
+
+  const srcSel = document.getElementById("courseSrcSelect");
+  const dstSel = document.getElementById("courseDstSelect");
+  const activeDiff = document.getElementById("diffSelect").value;
+  srcSel.innerHTML = "";
+  dstSel.innerHTML = "";
+  for (const c of courses) {
+    const opt = document.createElement("option");
+    opt.value = c.difficulty;
+    opt.textContent = `${COURSE_LABELS[c.difficulty] || c.difficulty} (${c.level_stars}★)`;
+    srcSel.appendChild(opt);
+  }
+  for (const diff of allDiffs) {
+    const opt = document.createElement("option");
+    opt.value = diff;
+    opt.textContent = COURSE_LABELS[diff] || diff;
+    dstSel.appendChild(opt);
+  }
+  if (courses.some((c) => c.difficulty === activeDiff)) srcSel.value = activeDiff;
+  const firstOther = allDiffs.find((d) => d !== srcSel.value) || allDiffs[0];
+  dstSel.value = firstOther;
+  const srcCourse = courses.find((c) => c.difficulty === srcSel.value);
+  document.getElementById("courseTargetStars").value = String(srcCourse ? srcCourse.level_stars : 5);
+
+  document.getElementById("btnCourseDeleteOnly").disabled = courses.length <= 1;
+  const hasRemoved = Boolean(state.data.overrides?.disabled_courses?.length);
+  document.getElementById("btnCourseRestoreAll").classList.toggle("hidden", Boolean(state.importId) || !hasRemoved);
+}
+
+document.getElementById("courseSrcSelect").addEventListener("change", (e) => {
+  const c = (state.data?.chart?.courses || []).find((item) => item.difficulty === e.target.value);
+  if (c) document.getElementById("courseTargetStars").value = String(c.level_stars);
+});
+
+async function applyCourseTransfer(removeSource) {
+  if (!state.data) return;
+  const src = document.getElementById("courseSrcSelect").value;
+  const dst = document.getElementById("courseDstSelect").value;
+  if (!src || !dst || src === dst) {
+    showToast("Choose two different difficulties for Source and Target.");
+    return;
+  }
+  const courses = state.data.chart.courses || [];
+  if (removeSource && courses.length <= 1) {
+    showToast("At least one course must remain.");
+    return;
+  }
+  const stars = Math.max(1, Math.min(12, Math.round(Number(document.getElementById("courseTargetStars").value || "5"))));
+
+  saveUndoPoint();
+  const ov = state.data.overrides;
+  if (!ov.note_edits) ov.note_edits = {};
+  if (!ov.course_sources) ov.course_sources = {};
+  if (!ov.disabled_courses) ov.disabled_courses = [];
+  if (!ov.difficulty_overrides) ov.difficulty_overrides = {};
+  if (!ov.balloon_counts_by_course) ov.balloon_counts_by_course = {};
+  if (!ov.fill_rolls_by_course) ov.fill_rolls_by_course = {};
+
+  const dstPrefix = `${dst}:`;
+  const srcPrefix = `${src}:`;
+  const cleaned = Object.fromEntries(
+    Object.entries(ov.note_edits).filter(([k]) => !k.startsWith(dstPrefix))
+  );
+  for (const [k, v] of Object.entries(ov.note_edits)) {
+    if (k.startsWith(srcPrefix)) {
+      cleaned[dstPrefix + k.slice(srcPrefix.length)] = v;
+    }
+  }
+  ov.note_edits = cleaned;
+
+  const srcCourse = courses.find((c) => c.difficulty === src);
+  const srcBalloons = ov.balloon_counts_by_course[src] ?? srcCourse?.balloon_counts ?? [];
+  ov.balloon_counts_by_course[dst] = [...srcBalloons];
+
+  ov.course_sources[dst] = ov.course_sources[src] || src;
+  ov.disabled_courses = ov.disabled_courses.filter((d) => d !== dst);
+
+  const srcDiffOv = ov.difficulty_overrides[src] || {};
+  ov.difficulty_overrides[dst] = { ...srcDiffOv, star_rating: stars };
+  if (ov.fill_rolls_by_course[src] !== undefined) {
+    ov.fill_rolls_by_course[dst] = ov.fill_rolls_by_course[src];
+  }
+
+  if (removeSource) {
+    ov.disabled_courses = [...new Set([...ov.disabled_courses, src])];
+  }
+
+  document.getElementById("courseModal").classList.add("hidden");
+  clearSelection();
+  state.editSeq += 1;
+  await rebuildChart(false);
+  document.getElementById("diffSelect").value = dst;
+  renderDiagnostics();
+  populateChartControls();
+  showToast(removeSource ? `Moved ${src} → ${dst} and deleted ${src}` : `Copied ${src} → ${dst}`);
+}
+
+document.getElementById("btnManageCourses").addEventListener("click", () => {
+  if (!state.data) return;
+  renderCourseModal();
+  document.getElementById("courseModal").classList.remove("hidden");
+});
+document.getElementById("btnCloseCourseModal").addEventListener("click", () => {
+  document.getElementById("courseModal").classList.add("hidden");
+});
+document.getElementById("btnCourseCopyKeep").addEventListener("click", () => applyCourseTransfer(false));
+document.getElementById("btnCourseMoveDelete").addEventListener("click", () => applyCourseTransfer(true));
+document.getElementById("btnCourseDeleteOnly").addEventListener("click", async () => {
+  if (!state.data) return;
+  const courses = state.data.chart.courses || [];
+  if (courses.length <= 1) {
+    showToast("At least one course must remain.");
+    return;
+  }
+  const src = document.getElementById("courseSrcSelect").value;
+  saveUndoPoint();
+  const ov = state.data.overrides;
+  ov.disabled_courses = [...new Set([...(ov.disabled_courses || []), src])];
+  document.getElementById("courseModal").classList.add("hidden");
+  clearSelection();
+  state.editSeq += 1;
+  await rebuildChart(false);
+  showToast(`Removed ${src} course`);
+});
+document.getElementById("btnCourseRestoreAll").addEventListener("click", async () => {
+  if (!state.data || state.importId) return;
+  saveUndoPoint();
+  state.data.overrides.disabled_courses = [];
+  state.data.overrides.course_sources = {};
+  document.getElementById("courseModal").classList.add("hidden");
+  state.editSeq += 1;
+  await rebuildChart(false);
+  showToast("Restored default courses");
+});
+
+// --- Save / Open Project Modal (workspace/saved_projects) ---
+document.getElementById("btnCloseProjectModal").addEventListener("click", () => {
+  document.getElementById("projectModal").classList.add("hidden");
+});
+
+document.getElementById("btnSaveProject").addEventListener("click", () => {
+  if (!state.data) return;
+  document.getElementById("projectModalTitle").textContent = "Save Project Draft";
+  document.getElementById("projectSaveForm").classList.remove("hidden");
+  document.getElementById("projectListWrap").classList.add("hidden");
+  const defaultName = state.activeProjectName || state.data.analysis_summary?.title || state.songId || "taiko-project";
+  document.getElementById("projectNameInput").value = defaultName;
+  document.getElementById("projectModal").classList.remove("hidden");
+});
+
+document.getElementById("btnConfirmSaveProject").addEventListener("click", async () => {
+  if (!state.data) return;
+  const projectName = document.getElementById("projectNameInput").value.trim();
+  if (!projectName) {
+    showToast("Enter a project name.");
+    return;
+  }
+  if (state.importId && !state.sourceTjaPath) {
+    showToast("Cannot save an imported TJA project without its source file path.");
+    return;
+  }
+  state.data.overrides.preset = document.getElementById("presetSelect").value;
+  state.data.overrides.global_offset_ms = parseFloat(document.getElementById("globalOffsetInput").value || "0");
+  const payload = {
+    project_name: projectName,
+    mode: state.importId ? "imported_tja" : "song",
+    song_id: state.importId ? null : state.songId,
+    source_tja_path: state.importId ? state.sourceTjaPath : null,
+    overrides: state.data.overrides,
+    active_difficulty: document.getElementById("diffSelect").value,
+    playhead_sec: Math.max(0, getCurrentTimeSec()),
+    lane_zoom: parseFloat(document.getElementById("laneZoom").value || "340"),
+  };
+  const res = await fetch("/api/projects/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    showToast(err.detail || "Could not save project");
+    return;
+  }
+  const saved = await res.json();
+  state.activeProjectName = saved.project_name;
+  document.getElementById("projectModal").classList.add("hidden");
+  showToast(`Saved project → ${saved.project_id}.taikolab.json`);
+});
+
+async function refreshProjectList() {
+  const res = await fetch("/api/projects");
+  const listEl = document.getElementById("projectList");
+  listEl.innerHTML = "";
+  if (!res.ok) {
+    showToast("Could not load saved projects");
+    return;
+  }
+  const { projects } = await res.json();
+  if (!projects.length) {
+    listEl.innerHTML = '<div class="hint">No saved projects yet in workspace/saved_projects/.</div>';
+    return;
+  }
+  for (const p of projects) {
+    const row = document.createElement("div");
+    row.className = "course-summary-row";
+    row.innerHTML = `
+      <div>
+        <div><strong>${p.project_name}</strong></div>
+        <div class="sec-meta">${p.mode === "imported_tja" ? "TJA" : p.song_id} &bull; ${p.active_difficulty} &bull; ${p.saved_at || ""}</div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-accent btn-open-proj">Load</button>
+        <button type="button" class="btn-danger btn-del-proj">Delete</button>
+      </div>
+    `;
+    row.querySelector(".btn-open-proj").addEventListener("click", () => loadSavedProject(p.project_id));
+    row.querySelector(".btn-del-proj").addEventListener("click", async () => {
+      await fetch(`/api/projects/${encodeURIComponent(p.project_id)}`, { method: "DELETE" });
+      await refreshProjectList();
+    });
+    listEl.appendChild(row);
+  }
+}
+
+async function loadSavedProject(projectId) {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/open`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json();
+    showToast(err.detail || "Could not open saved project");
+    return;
+  }
+  const { project, import_id } = await res.json();
+  document.getElementById("projectModal").classList.add("hidden");
+
+  if (project.mode === "imported_tja" && import_id) {
+    await loadImportedTja(import_id, project.source_tja_path);
+  } else if (project.song_id) {
+    const songSel = document.getElementById("songSelect");
+    if ([...songSel.options].some((o) => o.value === project.song_id)) {
+      songSel.value = project.song_id;
+    }
+    await loadSong(project.song_id);
+  }
+
+  state.activeProjectName = project.project_name;
+  state.data.overrides = project.overrides;
+  document.getElementById("globalOffsetInput").value = project.overrides.global_offset_ms || 0;
+  document.getElementById("laneZoom").value = String(project.lane_zoom || 340);
+  if (project.overrides.preset) {
+    const presetSel = document.getElementById("presetSelect");
+    if ([...presetSel.options].some((o) => o.value === project.overrides.preset)) {
+      presetSel.value = project.overrides.preset;
+    }
+  }
+  state.editSeq += 1;
+  await rebuildChart(false);
+  if ([...document.getElementById("diffSelect").options].some((o) => o.value === project.active_difficulty)) {
+    document.getElementById("diffSelect").value = project.active_difficulty;
+    renderDiagnostics();
+    populateChartControls();
+  }
+  seekToSec(project.playhead_sec || 0);
+  showToast(`Loaded project '${project.project_name}'`);
+}
+
+document.getElementById("btnOpenProject").addEventListener("click", async () => {
+  document.getElementById("projectModalTitle").textContent = "Open Saved Project (workspace/saved_projects)";
+  document.getElementById("projectSaveForm").classList.add("hidden");
+  document.getElementById("projectListWrap").classList.remove("hidden");
+  document.getElementById("projectModal").classList.remove("hidden");
+  await refreshProjectList();
+});
 
 init();

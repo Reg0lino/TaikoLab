@@ -839,3 +839,212 @@ def test_explicit_section_bpm_regrids_section_cleanly():
     hard = next(c for c in chart.courses if c.difficulty == "hard")
     assert len(hard.measures) == 4
     assert all(m.bpm == pytest.approx(240.0, abs=0.5) for m in hard.measures)
+def test_high_tom_and_mixed_fill_shape_produces_kas_not_all_dons():
+    cfg = load_config("punk_gallop")
+    beats = [BeatEvent(time_sec=i * 0.3, is_downbeat=(i % 4 == 0)) for i in range(8)]
+    drums = [
+        DrumHit(time_sec=0.0, drum_class="kick", velocity=0.9),
+        DrumHit(time_sec=0.3, drum_class="snare", velocity=0.9),
+        # Rapid snare + high/low tom fill in second half of bar 0
+        DrumHit(time_sec=0.60, drum_class="snare", velocity=0.85, pitch=38),
+        DrumHit(time_sec=0.675, drum_class="tom", velocity=0.85, pitch=50),
+        DrumHit(time_sec=0.75, drum_class="tom", velocity=0.85, pitch=48),
+        DrumHit(time_sec=0.825, drum_class="tom", velocity=0.85, pitch=45),
+        DrumHit(time_sec=0.90, drum_class="tom", velocity=0.85, pitch=43),
+        DrumHit(time_sec=0.975, drum_class="tom", velocity=0.85, pitch=41),
+        DrumHit(time_sec=1.20, drum_class="kick", velocity=0.95),
+        DrumHit(time_sec=1.20, drum_class="crash", velocity=0.95, pitch=49),
+    ]
+    analysis = SongAnalysis(
+        song_id="tom_fill",
+        title="Tom Fill",
+        audio_path="audio.wav",
+        duration_sec=2.4,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=2.4, bpm=200.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    chart = arrange_song(analysis, cfg)
+    hard = next(c for c in chart.courses if c.difficulty == "hard")
+    fill_notes = hard.measures[0].notes[8:]
+    assert TaikoNote.KAT.value in fill_notes
+    assert TaikoNote.DON.value in fill_notes
+    assert hard.measures[1].notes[0] == TaikoNote.BIG_KAT.value
+
+
+def test_mixed_snare_tom_fill_triggers_climax_balloon_before_crash():
+    cfg = load_config("punk_gallop")
+    beats = [BeatEvent(time_sec=i * 0.4, is_downbeat=(i % 4 == 0)) for i in range(12)]
+    drums = [
+        DrumHit(time_sec=0.0, drum_class="kick", velocity=0.9),
+        # Mixed 0.60s snare + tom fill at slots 8..14 leaving 1/8th clearance before bar 1 crash
+        DrumHit(time_sec=0.80, drum_class="snare", velocity=0.9, pitch=38),
+        DrumHit(time_sec=0.90, drum_class="tom", velocity=0.9, pitch=48),
+        DrumHit(time_sec=1.00, drum_class="snare", velocity=0.9, pitch=38),
+        DrumHit(time_sec=1.10, drum_class="tom", velocity=0.9, pitch=45),
+        DrumHit(time_sec=1.20, drum_class="tom", velocity=0.9, pitch=43),
+        DrumHit(time_sec=1.30, drum_class="snare", velocity=0.9, pitch=38),
+        DrumHit(time_sec=1.40, drum_class="tom", velocity=0.9, pitch=41),
+        DrumHit(time_sec=1.60, drum_class="kick", velocity=0.95),
+        DrumHit(time_sec=1.60, drum_class="crash", velocity=0.95),
+    ]
+    analysis = SongAnalysis(
+        song_id="climax_balloon",
+        title="Climax Balloon",
+        audio_path="audio.wav",
+        duration_sec=4.8,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=4.8, bpm=150.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    chart = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="climax_balloon",
+            target_highway_speed=240.0,
+            fill_rolls_by_course={"easy": 1, "normal": 1, "hard": 1, "oni": 1},
+        ),
+    )
+    hard = next(c for c in chart.courses if c.difficulty == "hard")
+    assert TaikoNote.BALLOON.value in hard.measures[0].notes
+    assert TaikoNote.END.value in hard.measures[0].notes
+    assert len(hard.balloon_counts) == 1
+    assert 5 <= hard.balloon_counts[0] <= 22
+def test_4bar_repeated_phrases_get_ride_accents_and_protect_downbeats():
+    cfg = load_config("punk_gallop")
+    bar_dur = 1.6
+    beats = []
+    drums = []
+    for m_idx in range(8):
+        start = m_idx * bar_dur
+        for b in range(4):
+            bt = start + b * 0.4
+            beats.append(BeatEvent(time_sec=bt, is_downbeat=(b == 0)))
+            drums.append(DrumHit(time_sec=bt, drum_class="kick" if b % 2 == 0 else "snare", velocity=0.85))
+        # Add offbeat ride hits and vary bar index inside the 4-bar A-B-C-D motif
+        if m_idx % 4 == 1:
+            drums.append(DrumHit(time_sec=start + 0.2, drum_class="kick", velocity=0.8))
+        if m_idx % 4 == 3:
+            drums.append(DrumHit(time_sec=start + 1.0, drum_class="snare", velocity=0.8))
+        for off in (0.2, 0.6, 1.0, 1.4):
+            drums.append(DrumHit(time_sec=start + off, drum_class="ride", velocity=0.85))
+
+    analysis = SongAnalysis(
+        song_id="phrase_4bar",
+        title="4-Bar Phrase",
+        audio_path="audio.wav",
+        duration_sec=8 * bar_dur,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=8 * bar_dur, bpm=150.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    chart = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="phrase_4bar",
+            difficulty_overrides={"oni": DifficultyRuleOverride(phrase_variation=0.5)},
+        ),
+    )
+    oni = next(c for c in chart.courses if c.difficulty == "oni")
+    # First 4-bar phrase stays faithful (only beat hits + bar 1/3 motif)
+    assert oni.measures[0].notes[2] == TaikoNote.REST.value
+    # Repeated 4-bar phrase (bars 4..7) gains ride accents while keeping beat 1 Don intact
+    assert any(
+        oni.measures[idx].notes[slot] == TaikoNote.KAT.value
+        for idx in range(4, 8)
+        for slot in (2, 6, 10, 14)
+    )
+    assert all(oni.measures[idx].notes[0] == TaikoNote.DON.value for idx in range(8))
+
+
+def test_balanced_hybrid_weaves_guitar_and_vocal_hooks_into_sparse_drum_pockets():
+    cfg = load_config("punk_gallop")
+    beats = [BeatEvent(time_sec=i * 0.4, is_downbeat=(i % 4 == 0)) for i in range(8)]
+    drums = [
+        # Bar 0: 4 quarter drum hits (spare pockets on 8th offbeats)
+        DrumHit(time_sec=0.0, drum_class="kick", velocity=0.85),
+        DrumHit(time_sec=0.4, drum_class="snare", velocity=0.85),
+        DrumHit(time_sec=0.8, drum_class="kick", velocity=0.85),
+        DrumHit(time_sec=1.2, drum_class="snare", velocity=0.85),
+        # Bar 1: drum dropout (0 hits)
+    ]
+    guitars = [
+        OnsetEvent(time_sec=0.2, strength=0.82),
+        OnsetEvent(time_sec=1.0, strength=0.82),
+        OnsetEvent(time_sec=1.6, strength=0.85),
+        OnsetEvent(time_sec=2.0, strength=0.85),
+        OnsetEvent(time_sec=2.4, strength=0.85),
+    ]
+    vocals = [
+        OnsetEvent(time_sec=1.4, strength=0.85),
+    ]
+    analysis = SongAnalysis(
+        song_id="balanced_hooks",
+        title="Balanced Hooks",
+        audio_path="audio.wav",
+        duration_sec=3.2,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=3.2, bpm=150.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+        guitar_events=guitars,
+        vocal_events=vocals,
+    )
+    chart = arrange_song(analysis, cfg)
+    hard = next(c for c in chart.courses if c.difficulty == "hard")
+    oni = next(c for c in chart.courses if c.difficulty == "oni")
+    # Hard catches the drum-dropout bar 1 via guitar fallback
+    assert sum(n != 0 for n in hard.measures[1].notes) >= 2
+    # Oni weaves offbeat guitar hooks into bar 0 alongside the 4 drum beats
+    assert oni.measures[0].notes[2] != TaikoNote.REST.value
+def test_higher_fill_roll_cap_up_to_12_and_dense_tom_groove_balance():
+    cfg = load_config("punk_gallop")
+    beats = [BeatEvent(time_sec=i * 0.4, is_downbeat=(i % 4 == 0)) for i in range(4)]
+    drums = [
+        DrumHit(time_sec=i * 0.2, drum_class="tom", velocity=0.85, pitch=43)
+        for i in range(8)
+    ]
+    analysis = SongAnalysis(
+        song_id="tom_groove",
+        title="Tom Groove",
+        audio_path="audio.wav",
+        duration_sec=1.6,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=1.6, bpm=150.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    chart = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="tom_groove",
+            fill_rolls_by_course={"easy": 6, "normal": 6, "hard": 6, "oni": 6},
+        ),
+    )
+    hard = next(c for c in chart.courses if c.difficulty == "hard")
+    assert TaikoNote.KAT.value in hard.measures[0].notes
+def test_halftime_72bpm_uses_32_slots_so_144bpm_16ths_do_not_collide():
+    cfg = load_config("punk_gallop")
+    bar_dur = 240.0 / 72.0
+    beats = [BeatEvent(time_sec=i * (bar_dur / 4), is_downbeat=(i % 4 == 0)) for i in range(4)]
+    # Two rapid hits 0.104s apart (144 BPM 16th note inside a 72 BPM bar)
+    drums = [
+        DrumHit(time_sec=0.0, drum_class="kick", velocity=0.9),
+        DrumHit(time_sec=0.104, drum_class="snare", velocity=0.9),
+        DrumHit(time_sec=bar_dur * 0.25, drum_class="snare", velocity=0.9),
+    ]
+    analysis = SongAnalysis(
+        song_id="halftime_72",
+        title="Halftime 72",
+        audio_path="audio.wav",
+        duration_sec=bar_dur,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=bar_dur, bpm=72.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    chart = arrange_song(analysis, cfg)
+    hard = next(c for c in chart.courses if c.difficulty == "hard")
+    assert len(hard.measures[0].notes) == 32
+    assert hard.measures[0].notes[0] == TaikoNote.DON.value
+    assert hard.measures[0].notes[1] == TaikoNote.KAT.value

@@ -101,8 +101,36 @@ def compute_energy_curve(stems: StemPaths, duration_sec: float, step_sec: float 
     ]
 
 
-def ensure_energy_curve(analysis: SongAnalysis) -> bool:
-    """Populate missing cached stem-energy data when at least one stem is available."""
+def _compute_mix_midrange_energy(audio_path: Path, duration_sec: float, step_sec: float = 0.2) -> list[EnergyPoint]:
+    """Fast CPU 250-3500Hz RMS fallback so quiet-intro protection works without Demucs."""
+    from scipy.signal import butter, sosfiltfilt
+
+    y, sr = load_mono_audio(audio_path, target_sr=11025)
+    if len(y) < sr * 0.25:
+        return []
+    nyq = 0.5 * sr
+    sos = butter(4, [250.0 / nyq, min(0.95, 3500.0 / nyq)], btype="bandpass", output="sos")
+    mid_y = sosfiltfilt(sos, y).astype(np.float32)
+    hop = max(1, int(round(step_sec * sr)))
+    rms = librosa.feature.rms(y=mid_y, frame_length=hop * 2, hop_length=hop)[0]
+    norm = rms / (float(np.max(rms)) + 1e-6)
+    n_bins = max(1, int(np.ceil(duration_sec / step_sec)))
+    out = np.zeros(n_bins, dtype=np.float32)
+    copy_n = min(n_bins, len(norm))
+    out[:copy_n] = norm[:copy_n]
+    return [
+        EnergyPoint(
+            time_sec=round(i * step_sec, 2),
+            drums_rms=0.0,
+            vocals_rms=0.0,
+            guitar_rms=round(float(out[i]), 3),
+        )
+        for i in range(n_bins)
+    ]
+
+
+def ensure_energy_curve(analysis: SongAnalysis, song_dir: Path | None = None) -> bool:
+    """Populate missing cached stem-energy data from stems or fast CPU mix bandpass."""
     if analysis.energy_curve:
         return False
 
@@ -116,8 +144,19 @@ def ensure_energy_curve(analysis: SongAnalysis) -> bool:
             else None
         ),
     )
-    if not any((available_stems.drums, available_stems.vocals, available_stems.bass, available_stems.instruments)):
-        return False
+    if any((available_stems.drums, available_stems.vocals, available_stems.bass, available_stems.instruments)):
+        analysis.energy_curve = compute_energy_curve(available_stems, analysis.duration_sec)
+        return True
 
-    analysis.energy_curve = compute_energy_curve(available_stems, analysis.duration_sec)
-    return True
+    if song_dir is not None and analysis.audio_path:
+        audio_file = song_dir / analysis.audio_path
+        if audio_file.is_file() and audio_file.stat().st_size > 1024:
+            try:
+                curve = _compute_mix_midrange_energy(audio_file, analysis.duration_sec)
+            except Exception:
+                curve = []
+            if curve:
+                analysis.energy_curve = curve
+                return True
+
+    return False

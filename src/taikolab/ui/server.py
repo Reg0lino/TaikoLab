@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import statistics
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +20,7 @@ from taikolab.exporters.diagnostics import analyze_course
 from taikolab.exporters.tja_writer import export_to_opentaiko, write_tja_file
 from taikolab.schemas import (
     DownbeatMarker,
+    SavedProject,
     SectionOverride,
     SongAnalysis,
     SongOverrides,
@@ -27,6 +30,7 @@ from taikolab.ui.tja_editor import (
     TjaDocument,
     apply_tja_edits,
     load_tja,
+    render_tja_edits,
     save_tja_edits,
 )
 
@@ -81,6 +85,7 @@ def _imported_chart_payload(
             "artist": chart.subtitle,
             "duration_sec": duration,
             "audio_path": str(document.audio_path) if document.audio_path else "",
+            "source_tja_path": str(document.path),
             "stems_available": ["mix"] if document.audio_path else [],
             "drum_hits": 0,
             "vocal_events": 0,
@@ -299,7 +304,7 @@ def _build_chart_payload(song_id: str, overrides: SongOverrides | None = None, e
     if not analysis.energy_curve:
         from taikolab.ingest.vocal_riff_tracker import ensure_energy_curve
 
-        if ensure_energy_curve(analysis):
+        if ensure_energy_curve(analysis, song_dir=song_dir):
             analysis_path.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
 
     overrides_path = song_dir / "overrides.json"
@@ -445,7 +450,7 @@ def create_app() -> FastAPI:
         try:
             chart = apply_tja_edits(document, overrides)
             _validate_manual_rolls(chart)
-            path = save_tja_edits(document, chart)
+            path = save_tja_edits(document, chart, overrides=overrides)
             document = load_tja(path)
             imported_tja[import_id] = document
         except (OSError, ValueError) as exc:
@@ -456,6 +461,8 @@ def create_app() -> FastAPI:
             artist=document.chart.subtitle,
             global_offset_ms=0.0,
             barline_times=[],
+            course_sources={},
+            disabled_courses=[],
             balloon_counts_by_course={
                 course.difficulty: course.balloon_counts
                 for course in document.chart.courses
@@ -472,6 +479,121 @@ def create_app() -> FastAPI:
         if document.audio_path is None:
             raise HTTPException(status_code=404, detail="The TJA WAVE audio file was not found beside the chart.")
         return FileResponse(str(document.audio_path))
+
+    def _saved_projects_dir() -> Path:
+        cfg = load_config()
+        ws = Path(cfg.settings.workspace_dir)
+        if not ws.is_absolute():
+            ws = cfg.root_dir / ws
+        proj_dir = ws / "saved_projects"
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        return proj_dir
+
+    @app.get("/api/projects")
+    def list_projects():
+        proj_dir = _saved_projects_dir()
+        items = []
+        for path in sorted(proj_dir.glob("*.taikolab.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                proj = SavedProject.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            items.append({
+                "project_id": path.name.removesuffix(".taikolab.json"),
+                "project_name": proj.project_name,
+                "mode": proj.mode,
+                "song_id": proj.song_id,
+                "source_tja_path": proj.source_tja_path,
+                "active_difficulty": proj.active_difficulty,
+                "saved_at": proj.saved_at,
+            })
+        return {"projects": items}
+
+    @app.post("/api/projects/save")
+    def save_project(project: SavedProject):
+        proj_dir = _saved_projects_dir()
+        slug = re.sub(r"[^a-z0-9._-]+", "-", project.project_name.strip().lower()).strip("-") or "project"
+        saved = project.model_copy(
+            update={"saved_at": datetime.now().isoformat(timespec="seconds")}
+        )
+        proj_path = proj_dir / f"{slug}.taikolab.json"
+        draft_path = proj_dir / f"{slug}.draft.tja"
+
+        try:
+            if saved.mode == "imported_tja":
+                if not saved.source_tja_path:
+                    raise ValueError("Missing source_tja_path for imported TJA project.")
+                doc = load_tja(Path(saved.source_tja_path))
+                draft_chart = apply_tja_edits(doc, saved.overrides)
+                _validate_manual_rolls(draft_chart)
+                draft_path.write_bytes(render_tja_edits(doc, draft_chart, overrides=saved.overrides))
+            elif saved.song_id:
+                cfg = load_config(saved.overrides.preset)
+                analysis_path = cfg.song_dir(saved.song_id) / "analysis.json"
+                if analysis_path.exists():
+                    analysis = SongAnalysis.model_validate_json(analysis_path.read_text(encoding="utf-8"))
+                    if saved.overrides.target_highway_speed is not None:
+                        cfg.settings.target_highway_speed = saved.overrides.target_highway_speed
+                    if saved.overrides.big_note_threshold is not None:
+                        cfg.preset.big_note_threshold = saved.overrides.big_note_threshold
+                    if saved.overrides.quiet_guitar_rms_threshold is not None:
+                        cfg.settings.quiet_guitar_rms_threshold = saved.overrides.quiet_guitar_rms_threshold
+                    draft_chart = arrange_song(analysis, cfg, overrides=saved.overrides)
+                    write_tja_file(
+                        draft_chart,
+                        draft_path,
+                        bpm_deadzone=cfg.settings.smooth_bpm_deadzone,
+                        normalize_scroll=cfg.settings.normalize_scroll_on_bpm_change,
+                        target_highway_speed=cfg.settings.target_highway_speed,
+                    )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        proj_path.write_text(saved.model_dump_json(indent=2), encoding="utf-8")
+        return {
+            "project_id": slug,
+            "project_name": saved.project_name,
+            "path": str(proj_path),
+            "draft_tja_path": str(draft_path) if draft_path.exists() else None,
+            "saved_at": saved.saved_at,
+        }
+
+    @app.post("/api/projects/{project_id}/open")
+    def open_project(project_id: str):
+        safe_id = Path(project_id).name
+        proj_path = _saved_projects_dir() / f"{safe_id}.taikolab.json"
+        if not proj_path.is_file():
+            raise HTTPException(status_code=404, detail=f"Saved project '{project_id}' not found.")
+        try:
+            proj = SavedProject.model_validate_json(proj_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Corrupt project file: {exc}") from exc
+
+        if proj.mode == "imported_tja":
+            if not proj.source_tja_path:
+                raise HTTPException(status_code=422, detail="Saved project is missing source_tja_path.")
+            try:
+                document = load_tja(Path(proj.source_tja_path))
+            except (OSError, UnicodeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            import_id = uuid.uuid4().hex
+            imported_tja[import_id] = document
+            updated_ov = proj.overrides.model_copy(update={"song_id": import_id})
+            return {"project": proj.model_copy(update={"overrides": updated_ov}).model_dump(), "import_id": import_id}
+
+        return {"project": proj.model_dump(), "import_id": None}
+
+    @app.delete("/api/projects/{project_id}")
+    def delete_project(project_id: str):
+        safe_id = Path(project_id).name
+        proj_dir = _saved_projects_dir()
+        proj_path = proj_dir / f"{safe_id}.taikolab.json"
+        draft_path = proj_dir / f"{safe_id}.draft.tja"
+        if not proj_path.is_file():
+            raise HTTPException(status_code=404, detail="Saved project not found.")
+        proj_path.unlink(missing_ok=True)
+        draft_path.unlink(missing_ok=True)
+        return {"deleted": safe_id}
 
     @app.get("/api/songs")
     def list_songs():

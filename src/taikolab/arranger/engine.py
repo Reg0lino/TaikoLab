@@ -21,9 +21,22 @@ def arrange_song(
     if not slots:
         raise ValueError(f"Could not generate any measures for song '{analysis.song_id}'.")
 
+    disabled = set(overrides.disabled_courses) if overrides else set()
+    active_difficulties = [diff for diff in difficulties if diff not in disabled]
+    if not active_difficulties:
+        raise ValueError("At least one course must remain enabled.")
+
     courses = [
-        build_course(analysis, slots, diff, cfg, overrides, base_slots=base_slots)
-        for diff in difficulties
+        build_course(
+            analysis,
+            slots,
+            diff,
+            cfg,
+            overrides,
+            base_slots=base_slots,
+            rule_difficulty=overrides.course_sources.get(diff, diff) if overrides else diff,
+        )
+        for diff in active_difficulties
     ]
 
     bpms = [s.bpm for s in slots]

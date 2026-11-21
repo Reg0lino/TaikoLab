@@ -132,3 +132,54 @@ def test_ml_adapters_import_without_breaking_torch():
     assert torch.cuda.is_available()
     assert hasattr(beat_this.inference, "File2Beats")
     assert hasattr(adtof_pytorch, "transcribe_to_midi")
+def test_stabilize_steady_region_beats_flattens_small_jitter_only_in_steady_regions():
+    from taikolab.ingest.beat_tracker import _stabilize_steady_region_beats
+    from taikolab.schemas import BeatEvent, TempoRegion
+
+    # 8 steady 120 BPM bars (2.0s each) with +/-18ms wobble
+    offsets = [0.015, -0.014, 0.018, -0.012, 0.016, -0.018, 0.010, -0.011]
+    events = [
+        BeatEvent(time_sec=round(i * 2.0 + offsets[i] + 0.2, 4), is_downbeat=True)
+        for i in range(8)
+    ]
+    regions = [TempoRegion(start_sec=0.0, end_sec=16.5, bpm=120.0, numerator=4, denominator=4)]
+
+    stabilized = _stabilize_steady_region_beats(events, regions)
+    dbs = [e.time_sec for e in stabilized if e.is_downbeat]
+    assert len(dbs) >= 8
+    spacings = [dbs[i + 1] - dbs[i] for i in range(len(dbs) - 1)]
+    assert max(spacings) - min(spacings) < 0.005
+
+
+def test_hybrid_transcription_rescues_softer_isolated_drum_fill_hits(monkeypatch, tmp_path: Path):
+    from taikolab.ingest import drum_transcriber as dt_mod
+    from taikolab.schemas import DrumHit
+
+    monkeypatch.setattr(dt_mod, "run_adtof_transcription", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        dt_mod,
+        "extract_dsp_drum_hits",
+        lambda *_args, **_kwargs: [
+            DrumHit(time_sec=0.50, drum_class="snare", velocity=0.44, source="dsp"),
+            DrumHit(time_sec=0.60, drum_class="tom", velocity=0.44, source="dsp"),
+        ],
+    )
+    hits = dt_mod.transcribe_drums_hybrid(tmp_path / "drums.wav", has_isolated_drums=True)
+    assert len(hits) == 2
+    assert {h.drum_class for h in hits} == {"snare", "tom"}
+def test_ensure_energy_curve_falls_back_to_cpu_mix_midrange_without_demucs(tmp_path: Path):
+    sr = 22050
+    t = np.linspace(0, 2.0, sr * 2, endpoint=False, dtype=np.float32)
+    y = np.where(t < 1.0, 0.05, 0.6) * np.sin(2 * np.pi * 660 * t)
+    _write_test_wav(tmp_path / "audio_clean.wav", y, sr)
+    analysis = SongAnalysis(
+        song_id="mix_energy",
+        title="Mix Energy",
+        audio_path="audio_clean.wav",
+        duration_sec=2.0,
+    )
+    assert ensure_energy_curve(analysis, song_dir=tmp_path)
+    first_half = [p.guitar_rms for p in analysis.energy_curve if p.time_sec < 0.8]
+    second_half = [p.guitar_rms for p in analysis.energy_curve if p.time_sec > 1.2]
+    assert sum(first_half) / len(first_half) < 0.25
+    assert sum(second_half) / len(second_half) > 0.5

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -50,7 +51,6 @@ def discover_song_files(song_dir: Path) -> tuple[Path, StemPaths]:
         else:
             non_stem_candidates.append(p)
 
-    # Prefer explicit mix file (audio.ogg/wav/mp3 or non-stem track); else build mix from stems
     main_audio: Path | None = None
     for preferred_name in ("audio", "mix", "full", "song"):
         for cand in non_stem_candidates:
@@ -61,13 +61,11 @@ def discover_song_files(song_dir: Path) -> tuple[Path, StemPaths]:
             break
 
     if main_audio is None and non_stem_candidates:
-        # Prefer .ogg/.wav over .mp3 if multiple exist
         priority = {".ogg": 0, ".wav": 1, ".flac": 2, ".mp3": 3}
         non_stem_candidates.sort(key=lambda p: priority.get(p.suffix.lower(), 9))
         main_audio = non_stem_candidates[0]
 
     if main_audio is None:
-        # User only dropped stems (e.g. from FL Studio) -> synthesize a clean mix_audio.wav
         main_audio = build_mix_from_stems(song_dir, stems)
 
     return main_audio, stems
@@ -104,7 +102,6 @@ def build_mix_from_stems(song_dir: Path, stems: StemPaths) -> Path:
             mix_data = audio
             mix_sr = sr
         else:
-            min_len = min(len(mix_data), len(audio))
             if len(audio) > len(mix_data):
                 pad = np.zeros((len(audio) - len(mix_data), mix_data.shape[1]), dtype=np.float32)
                 mix_data = np.vstack([mix_data, pad])
@@ -137,7 +134,7 @@ def ensure_wav_path(audio_path: Path) -> Iterator[Path]:
 
 
 def separate_stems_demucs(song_dir: Path, audio_path: Path, device: str = "cuda") -> StemPaths:
-    """Split a single mix file into cached drums/vocals/bass/instruments WAVs using HTDemucs."""
+    """Split mix into cached stems using paced 20s windows to avoid Windows WDDM TDR crashes."""
     import torch
     from demucs.apply import apply_model
     from demucs.pretrained import get_model
@@ -179,18 +176,78 @@ def separate_stems_demucs(song_dir: Path, audio_path: Path, device: str = "cuda"
         ch1 = librosa.resample(data[:, 1], orig_sr=sr, target_sr=model.samplerate)
         data = np.stack([ch0, ch1], axis=1).astype(np.float32)
 
-    wav_tensor = torch.from_numpy(data.T).unsqueeze(0).to(chosen_device)
-    with torch.no_grad():
-        sources = apply_model(model, wav_tensor, device=chosen_device, split=True, overlap=0.25, progress=True)[0]
+    sr_model = int(model.samplerate)
+    source_names = list(model.sources)
+    total_samples = len(data)
+    win_samples = int(20 * sr_model)
+    overlap_samples = int(2 * sr_model)
 
-    sources_cpu = sources.cpu().numpy()
-    for idx, src_name in enumerate(model.sources):
+    try:
+        if total_samples <= int(24 * sr_model):
+            wav_tensor = torch.from_numpy(data.T).unsqueeze(0).to(chosen_device)
+            with torch.no_grad():
+                sources = apply_model(model, wav_tensor, device=chosen_device, split=True, overlap=0.25, progress=False)[0]
+            sources_cpu = sources.cpu().numpy()
+            del wav_tensor, sources
+        else:
+            step = max(1, win_samples - overlap_samples)
+            acc = np.zeros((len(source_names), total_samples, 2), dtype=np.float32)
+            weight_acc = np.zeros((total_samples, 1), dtype=np.float32)
+            starts = list(range(0, total_samples, step))
+            for chunk_idx, start in enumerate(starts):
+                end = min(total_samples, start + win_samples)
+                chunk = data[start:end]
+                if len(chunk) < int(1.0 * sr_model) and chunk_idx > 0:
+                    continue
+                wav_tensor = torch.from_numpy(chunk.T).unsqueeze(0).to(chosen_device)
+                with torch.no_grad():
+                    out_t = apply_model(
+                        model,
+                        wav_tensor,
+                        device=chosen_device,
+                        split=True,
+                        overlap=0.25,
+                        progress=False,
+                    )[0]
+                out_np = out_t.cpu().numpy()
+                del wav_tensor, out_t
+
+                chunk_len = end - start
+                w = np.ones((chunk_len, 1), dtype=np.float32)
+                if start > 0:
+                    fade_n = min(overlap_samples, chunk_len // 2)
+                    w[:fade_n, 0] = np.linspace(0.0, 1.0, fade_n, dtype=np.float32)
+                if end < total_samples:
+                    fade_n = min(overlap_samples, chunk_len // 2)
+                    w[-fade_n:, 0] = np.linspace(1.0, 0.0, fade_n, dtype=np.float32)
+
+                for s_i in range(len(source_names)):
+                    acc[s_i, start:end, :] += out_np[s_i].T * w
+                weight_acc[start:end, :] += w
+
+                if chosen_device == "cuda":
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    time.sleep(0.12)
+                pct = int(round(100.0 * end / total_samples))
+                print(f"[TaikoLab Demucs] Separated {pct}% ({end / sr_model:.1f}s / {total_samples / sr_model:.1f}s)", flush=True)
+
+            safe_w = np.maximum(weight_acc, 1e-6)
+            sources_cpu = np.stack([(acc[s_i] / safe_w) for s_i in range(len(source_names))], axis=0)
+    finally:
+        del model
+        if chosen_device == "cuda":
+            torch.cuda.empty_cache()
+
+    for idx, src_name in enumerate(source_names):
         if src_name in out_map:
-            audio_np = sources_cpu[idx].T
+            audio_np = sources_cpu[idx]
+            if audio_np.ndim == 2 and audio_np.shape[0] == 2 and audio_np.shape[1] != 2:
+                audio_np = audio_np.T
             peak = float(np.max(np.abs(audio_np)))
             if peak > 0.99:
                 audio_np = audio_np * (0.98 / peak)
-            sf.write(str(out_map[src_name]), audio_np, model.samplerate, subtype="PCM_16")
+            sf.write(str(out_map[src_name]), audio_np, sr_model, subtype="PCM_16")
 
     return StemPaths(
         drums=str(out_map["drums"]),

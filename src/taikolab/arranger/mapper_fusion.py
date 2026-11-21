@@ -1,4 +1,4 @@
-"""Guitar riff injection & Big-Note accent fusion."""
+"""Guitar/synth riff injection & Big-Note accent fusion."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def apply_guitar_fusion(
     plans: list[MeasurePlan],
     cfg: AppConfig,
 ) -> dict[tuple[int, int], PlacedCandidate]:
-    """Fuse guitar accents, while simplifying quiet guitar-only bars to downbeats."""
+    """Fuse guitar accents into drum pockets, while simplifying quiet guitar-only bars."""
     merged = dict(placed)
 
     for ev in guitar_events:
@@ -45,11 +45,14 @@ def apply_guitar_fusion(
             continue
 
         bar_drum_count = sum(1 for (bm, _) in merged if bm == m_idx)
-        if plan.follow_mode == "guitar" or bar_drum_count < 4:
+        adjacent_busy = any((m_idx, s_idx + delta) in merged for delta in (-1, 1))
+        if plan.follow_mode == "guitar" or (
+            bar_drum_count < 6 and not adjacent_busy and ev.strength >= max(cfg.preset.guitar_min_strength, 0.65)
+        ):
             note = (
                 TaikoNote.BIG_DON
                 if plan.enable_big_notes and ev.strength >= cfg.preset.big_note_threshold
-                else TaikoNote.DON
+                else (TaikoNote.KAT if s_idx % 4 == 2 and bar_drum_count > 0 else TaikoNote.DON)
             )
             merged[key] = PlacedCandidate(
                 measure_idx=m_idx,

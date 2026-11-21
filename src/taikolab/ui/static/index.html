@@ -40,7 +40,13 @@
           <option value="oni">Oni</option>
         </select>
       </label>
+      <label title="Editable star difficulty (LEVEL 1-12) for the active course.">&#9733;
+        <input type="number" id="courseStarsInput" min="1" max="12" step="1" value="5" style="width:54px" />
+      </label>
+      <button type="button" id="btnManageCourses" title="Copy, move, or remove difficulties across Easy/Normal/Hard/Oni.">Courses&hellip;</button>
       <button type="button" id="btnToggleChartControls" title="Show or hide chart speed, sensitivity, density, and repeat-variation sliders.">Chart Sliders</button>
+      <button type="button" id="btnSaveProject" title="Save work-in-progress to workspace/saved_projects/ without overwriting the live game TJA.">Save Project</button>
+      <button type="button" id="btnOpenProject" title="Resume a saved project from workspace/saved_projects/.">Open Project&hellip;</button>
       <button id="btnExport" class="btn-primary">Export to YataiDON</button>
     </div>
   </header>
@@ -56,7 +62,7 @@
         <div class="ctrl-item">
           <label>Highway Speed (<span id="lblCtrlSpeed">101</span>)
             <div class="ctrl-row">
-              <input type="range" id="ctrlHighwaySpeed" min="70" max="160" step="1" value="101.343" />
+              <input type="range" id="ctrlHighwaySpeed" min="70" max="280" step="1" value="101.343" />
               <button type="button" class="btn-xs" id="btnResetCtrlSpeed">Reset</button>
             </div>
           </label>
@@ -116,7 +122,7 @@
         <div class="ctrl-item">
           <label>Course Fill-Roll Cap (<span id="lblCtrlRolls">0</span>)
             <div class="ctrl-row">
-              <input type="range" id="ctrlCourseRolls" min="0" max="3" step="1" value="0" />
+              <input type="range" id="ctrlCourseRolls" min="0" max="12" step="1" value="0" />
               <button type="button" class="btn-xs" id="btnResetCtrlRolls">Reset</button>
             </div>
           </label>
@@ -412,6 +418,55 @@
       </div>
     </section>
   </main>
+
+  <!-- Course Copy / Move / Remove Modal -->
+  <div id="courseModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <strong>Manage Courses (Copy / Move / Remove)</strong>
+        <button type="button" id="btnCloseCourseModal">Close</button>
+      </div>
+      <div id="courseSummaryList" class="course-summary-list"></div>
+      <div class="modal-grid">
+        <label>From (Source)
+          <select id="courseSrcSelect"></select>
+        </label>
+        <label>To (Target)
+          <select id="courseDstSelect"></select>
+        </label>
+        <label>Target &#9733; (1-12)
+          <input type="number" id="courseTargetStars" min="1" max="12" step="1" value="5" />
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="btnCourseCopyKeep" class="btn-accent" title="Overwrite or create Target with Source's exact chart and keep Source.">Copy &amp; Keep Source</button>
+        <button type="button" id="btnCourseMoveDelete" class="btn-warn" title="Overwrite or create Target with Source's exact chart and delete Source.">Move (Copy &amp; Delete Source)</button>
+        <button type="button" id="btnCourseDeleteOnly" class="btn-danger" title="Remove the selected Source course from this chart.">Delete Source</button>
+        <button type="button" id="btnCourseRestoreAll" title="Restore removed Easy/Normal/Hard/Oni courses (generated mode only).">Restore Removed</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Save / Open Project Modal -->
+  <div id="projectModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <strong id="projectModalTitle">Saved Projects (workspace/saved_projects)</strong>
+        <button type="button" id="btnCloseProjectModal">Close</button>
+      </div>
+      <div id="projectSaveForm" class="project-save-form hidden">
+        <label>Project Name
+          <input type="text" id="projectNameInput" placeholder="e.g. caribou-hard-wip" />
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="btnConfirmSaveProject" class="btn-accent">Save to workspace/saved_projects</button>
+        </div>
+      </div>
+      <div id="projectListWrap" class="project-list-wrap hidden">
+        <div id="projectList" class="course-summary-list"></div>
+      </div>
+    </div>
+  </div>
 
   <div id="toast" class="toast hidden"></div>
   <script src="/static/app.js"></script>

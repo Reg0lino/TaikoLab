@@ -41,8 +41,39 @@ _VOCAL_KEYWORDS = ("vocal", "voice", "vox", "sing", "melody", "lyric")
 _GUITAR_KEYWORDS = ("guitar", "gtr", "rhythm", "lead", "distorted", "overdrive", "clean", "bass")
 
 
+def _find_ffmpeg_exe() -> str | None:
+    import shutil
+
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def _strip_to_first_mp3_frame(data: bytes) -> bytes | None:
+    offset = 0
+    if data.startswith(b"ID3") and len(data) >= 10:
+        tag_size = (
+            ((data[6] & 0x7F) << 21)
+            | ((data[7] & 0x7F) << 14)
+            | ((data[8] & 0x7F) << 7)
+            | (data[9] & 0x7F)
+        )
+        offset = min(len(data), 10 + tag_size)
+    limit = min(len(data) - 2, offset + 262144)
+    for idx in range(offset, max(offset, limit)):
+        if data[idx] == 0xFF and (data[idx + 1] & 0xE0) == 0xE0:
+            return data[idx:]
+    return data[offset:] if offset > 0 and offset < len(data) else None
+
+
 def _ensure_clean_simulator_audio(song_dir: Path, main_audio: Path) -> Path:
-    """Decode VBR/corrupt-Xing MP3 once into clean PCM audio_clean.wav for exact sync."""
+    """Decode VBR/corrupt-Xing MP3/FLAC once into clean PCM audio_clean.wav for exact sync."""
     if main_audio.suffix.lower() in (".wav", ".ogg"):
         return main_audio
 
@@ -50,14 +81,54 @@ def _ensure_clean_simulator_audio(song_dir: Path, main_audio: Path) -> Path:
     if clean_wav.exists() and clean_wav.stat().st_size > 10000:
         return clean_wav
 
+    import subprocess
+    import tempfile
     import librosa
 
     print(f"[TaikoLab TabSync] Decoding {main_audio.name} -> audio_clean.wav (fixes MP3 seek drift)...")
-    y, sr = librosa.load(str(main_audio), sr=44100, mono=False)
-    if y.ndim == 2:
-        y = y.T
-    sf.write(str(clean_wav), y, sr, subtype="PCM_16")
-    return clean_wav
+    try:
+        y, sr = librosa.load(str(main_audio), sr=44100, mono=False)
+        if y.ndim == 2:
+            y = y.T
+        sf.write(str(clean_wav), y, sr, subtype="PCM_16")
+        return clean_wav
+    except Exception as primary_exc:
+        ffmpeg_exe = _find_ffmpeg_exe()
+        if ffmpeg_exe:
+            res = subprocess.run(
+                [ffmpeg_exe, "-y", "-i", str(main_audio), "-vn", "-acodec", "pcm_s16le", "-ar", "44100", str(clean_wav)],
+                capture_output=True,
+                text=True,
+            )
+            if res.returncode == 0 and clean_wav.exists() and clean_wav.stat().st_size > 10000:
+                return clean_wav
+
+        if main_audio.suffix.lower() == ".mp3":
+            raw = main_audio.read_bytes()
+            if len(raw) >= 12 and raw[4:8] == b"ftyp":
+                raise RuntimeError(
+                    f"{main_audio.name} is actually an MP4/M4A container renamed to .mp3, and ffmpeg is not installed. "
+                    "Convert it to WAV/FLAC or install ffmpeg."
+                ) from primary_exc
+            trimmed = _strip_to_first_mp3_frame(raw)
+            if trimmed:
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+                try:
+                    tmp_path.write_bytes(trimmed)
+                    y, sr = librosa.load(str(tmp_path), sr=44100, mono=False)
+                    if y.ndim == 2:
+                        y = y.T
+                    sf.write(str(clean_wav), y, sr, subtype="PCM_16")
+                    return clean_wav
+                except Exception:
+                    pass
+                finally:
+                    tmp_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Could not decode {main_audio.name}. If it has corrupt frames or is not a standard MP3/FLAC, "
+            "convert it to WAV/FLAC or install ffmpeg."
+        ) from primary_exc
 
 
 def _build_tick_to_sec(mid: mido.MidiFile) -> tuple[callable, list[tuple[int, int, int]], int]:
@@ -196,7 +267,7 @@ def _parse_midi_unified(
             if d_cls in seen_drum_cls and (s_sec - seen_drum_cls[d_cls]) < 0.015:
                 continue
             seen_drum_cls[d_cls] = s_sec
-            drums.append(DrumHit(time_sec=round(s_sec, 4), drum_class=d_cls, velocity=round(vel, 3), source="tab"))
+            drums.append(DrumHit(time_sec=round(s_sec, 4), drum_class=d_cls, velocity=round(vel, 3), source="tab", pitch=int(pitch)))
             continue
 
         prog = channel_programs.get(ch, 0)
@@ -351,7 +422,12 @@ def _search_affine_drum_warp(
             best_error = candidate_error
 
     for rate in np.arange(0.90, 1.1001, 0.002):
-        for lag in np.arange(initial_lag - 0.25, initial_lag + 0.2501, 0.01):
+        for lag in np.arange(initial_lag - 1.00, initial_lag + 1.0001, 0.02):
+            consider(float(rate), float(lag))
+    coarse_mid_lag = best_lag
+    coarse_mid_rate = best_rate
+    for rate in np.arange(max(0.90, coarse_mid_rate - 0.004), min(1.10, coarse_mid_rate + 0.0041), 0.001):
+        for lag in np.arange(coarse_mid_lag - 0.04, coarse_mid_lag + 0.0401, 0.005):
             consider(float(rate), float(lag))
 
     coarse_rate = best_rate
@@ -450,9 +526,9 @@ def _select_drum_alignment_warp(
     if total_hits < 30:
         return dtw_knots_m, dtw_knots_a, current_matches, total_hits, None
 
-    anchor_midi_sec = min(
-        h.time_sec for h in midi_drums if h.drum_class in ("kick", "snare")
-    )
+    ks_times = sorted(h.time_sec for h in midi_drums if h.drum_class in ("kick", "snare"))
+    # Anchor near mid-song where guitars/bass stabilize Chroma DTW (avoids blind solo-drum intros)
+    anchor_midi_sec = ks_times[len(ks_times) // 2]
     anchor_audio_sec = float(np.interp(anchor_midi_sec, dtw_knots_m, dtw_knots_a))
     affine_m, affine_a, affine_rate = _estimate_classified_drum_warp(
         midi_drums,
@@ -461,6 +537,15 @@ def _select_drum_alignment_warp(
         anchor_midi_sec=anchor_midi_sec,
         anchor_audio_sec=anchor_audio_sec,
     )
+    # Snap near-exact 1.0x click/synth tracks (e.g. Songsterr MP3s) cleanly to constant rate=1.0
+    if abs(affine_rate - 1.0) <= 0.0005:
+        lag = float(np.median(affine_a - affine_m))
+        const_a = affine_m + lag
+        const_matches, _ = _score_drum_warp(midi_drums, real_drums, affine_m, const_a, tolerance_sec=0.020)
+        if const_matches >= int(0.96 * total_hits):
+            affine_a = const_a
+            affine_rate = 1.0
+
     affine_matches, _ = _score_drum_warp(midi_drums, real_drums, affine_m, affine_a)
     required_improvement = max(12, int(np.ceil(total_hits * 0.05)))
     if affine_matches >= current_matches + required_improvement:
@@ -566,11 +651,18 @@ def _align_via_synctoolbox(
                 k_mask = (knots_m >= win_start) & (knots_m < win_start + 6.0)
                 refined_a[k_mask] += best_n
 
-        # 5-point moving average on lags so bar tempos never jitter wildly
+        # 3-point triangular smoothing + local slope clamp [0.85, 1.18] prevents breakdown BPM spikes
         lags = refined_a - knots_m
-        kernel = np.ones(5) / 5.0
-        smooth_lags = np.convolve(np.pad(lags, (2, 2), mode="edge"), kernel, mode="valid")
-        knots_a = np.maximum.accumulate(knots_m + smooth_lags)
+        kernel = np.array([0.25, 0.50, 0.25], dtype=np.float64)
+        smooth_lags = np.convolve(np.pad(lags, (1, 1), mode="edge"), kernel, mode="valid")
+        raw_a = knots_m + smooth_lags
+        clamped_a = [float(raw_a[0])]
+        for i in range(1, len(knots_m)):
+            dm = float(knots_m[i] - knots_m[i - 1])
+            da = float(raw_a[i] - clamped_a[-1])
+            da = max(dm * 0.85, min(dm * 1.18, da))
+            clamped_a.append(clamped_a[-1] + da)
+        knots_a = np.array(clamped_a, dtype=np.float64)
 
         final_warped = np.interp(m_ks, knots_m, knots_a)
         idx = np.searchsorted(r_ks, final_warped)
@@ -595,6 +687,50 @@ def _align_via_synctoolbox(
         )
 
     return knots_m, knots_a
+
+
+def _print_sync_audit(
+    warped_bars: list[tuple[float, float, float, int, int, float, float]],
+    warped_drums: list[DrumHit],
+    real_drums: list[DrumHit],
+) -> None:
+    """Report any 4-bar phrases whose drum hits deviate >35ms from isolated drum transients."""
+    midi_ks = np.array(
+        sorted(h.time_sec for h in warped_drums if h.drum_class in ("kick", "snare")),
+        dtype=np.float64,
+    )
+    real_ks = np.array(
+        sorted(h.time_sec for h in real_drums if h.drum_class in ("kick", "snare")),
+        dtype=np.float64,
+    )
+    if len(midi_ks) < 8 or len(real_ks) < 8:
+        return
+
+    flagged: list[str] = []
+    for start_bar in range(0, len(warped_bars), 4):
+        end_bar = min(len(warped_bars) - 1, start_bar + 3)
+        t0 = warped_bars[start_bar][0]
+        t1 = warped_bars[end_bar][1]
+        chunk = midi_ks[(midi_ks >= t0) & (midi_ks < t1)]
+        if len(chunk) < 4:
+            continue
+        idx = np.searchsorted(real_ks, chunk)
+        right = real_ks[np.minimum(idx, len(real_ks) - 1)] - chunk
+        left = real_ks[np.maximum(idx - 1, 0)] - chunk
+        signed = np.where(np.abs(left) < np.abs(right), left, right)
+        near = signed[np.abs(signed) <= 0.12]
+        if len(near) < max(3, len(chunk) // 2):
+            continue
+        med_ms = float(np.median(near) * 1000.0)
+        if abs(med_ms) > 35.0:
+            flagged.append(f"bars {start_bar}-{end_bar} ({med_ms:+.0f}ms)")
+
+    if flagged:
+        shown = ", ".join(flagged[:6])
+        more = f" (+{len(flagged) - 6} more)" if len(flagged) > 6 else ""
+        print(f"[TaikoLab SyncAudit] Residual offset spots >35ms vs drums.wav: {shown}{more}")
+    else:
+        print("[TaikoLab SyncAudit] All 4-bar phrases are within +/-35ms of drums.wav!")
 
 
 def _split_double_time_bars(
@@ -648,6 +784,7 @@ def import_midi_aligned(
     artist: str = "Unknown",
     manual_offset_sec: float | None = None,
     device: str = "cuda",
+    use_stems: bool = False,
 ) -> SongAnalysis:
     """Parse a MIDI tab and align it to real audio via SyncToolbox Chroma+Onset DTW."""
     if not midi_path.exists():
@@ -656,6 +793,17 @@ def import_midi_aligned(
     raw_main_audio, stems = discover_song_files(song_dir)
     main_audio = _ensure_clean_simulator_audio(song_dir, raw_main_audio)
     duration = get_audio_duration(main_audio)
+
+    effective_device = device
+    if manual_offset_sec is None and use_stems and not stems.drums and duration >= 15.0:
+        try:
+            from taikolab.ingest.stem_loader import separate_stems_demucs
+
+            stems = separate_stems_demucs(song_dir, main_audio, device=effective_device)
+        except Exception as exc:
+            print(f"[TaikoLab TabSync] Demucs stem separation skipped ({exc}); falling back to full mix.")
+            if "cuda" in str(exc).lower():
+                effective_device = "cpu"
 
     bars, drums, vocals, guitars, synth_guide = _parse_midi_unified(midi_path)
     print(
@@ -670,13 +818,17 @@ def import_midi_aligned(
         print(f"[TaikoLab TabSync] Manual offset override: {manual_offset_sec:+.3f}s")
     else:
         if stems.drums:
-            from taikolab.ingest.drum_dsp import extract_dsp_drum_hits
+            from taikolab.ingest.drum_transcriber import transcribe_drums_hybrid
 
-            real_drums = extract_dsp_drum_hits(Path(stems.drums))
+            real_drums = transcribe_drums_hybrid(
+                Path(stems.drums),
+                has_isolated_drums=True,
+                device="cpu",
+            )
         else:
             from taikolab.ingest.drum_transcriber import run_adtof_transcription
 
-            real_drums = run_adtof_transcription(main_audio, device=device)
+            real_drums = run_adtof_transcription(main_audio, device="cpu")
 
         knots_m, knots_a = _align_via_synctoolbox(main_audio, synth_guide, drums, real_drums, duration)
 
@@ -690,7 +842,7 @@ def import_midi_aligned(
         return float(np.interp(t, knots_m, knots_a))
 
     warped_drums = [
-        DrumHit(time_sec=round(wt, 4), drum_class=h.drum_class, velocity=h.velocity, source="tab")
+        DrumHit(time_sec=round(wt, 4), drum_class=h.drum_class, velocity=h.velocity, source="tab", pitch=h.pitch)
         for h in drums
         if 0.0 <= (wt := warp(h.time_sec)) <= duration
     ]
@@ -761,7 +913,10 @@ def import_midi_aligned(
 
     from taikolab.ingest.vocal_riff_tracker import ensure_energy_curve
 
-    ensure_energy_curve(analysis)
+    ensure_energy_curve(analysis, song_dir=song_dir)
+
+    if manual_offset_sec is None and len(warped_bars) >= 4:
+        _print_sync_audit(warped_bars, warped_drums, real_drums)
 
     out_json = song_dir / "analysis.json"
     out_json.write_text(analysis.model_dump_json(indent=2), encoding="utf-8")

@@ -211,3 +211,72 @@ def test_chart_control_sliders_persist_and_apply_through_ui_arrange(tmp_path: Pa
     assert saved.target_highway_speed == 140.0
     assert saved.difficulty_overrides["oni"].density_scale == 0.5
     assert saved.difficulty_overrides["oni"].phrase_variation == 1.0
+def test_course_copy_move_and_saved_project_roundtrip(tmp_path: Path, monkeypatch):
+    song_dir = tmp_path / "proj_song"
+    song_dir.mkdir()
+    sr = 22050
+    sf.write(str(song_dir / "audio.wav"), np.zeros(sr * 4, dtype=np.float32), sr)
+
+    analysis = SongAnalysis(
+        song_id="proj_song",
+        title="Project Song",
+        artist="Tester",
+        audio_path="audio.wav",
+        duration_sec=4.0,
+        beats=[BeatEvent(time_sec=i * 0.5, is_downbeat=(i % 4 == 0)) for i in range(8)],
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=4.0, bpm=120.0, numerator=4, denominator=4)],
+        drum_hits=[DrumHit(time_sec=i * 0.25, drum_class="kick" if i % 2 == 0 else "snare", velocity=0.9) for i in range(16)],
+    )
+    (song_dir / "analysis.json").write_text(analysis.model_dump_json(), encoding="utf-8")
+
+    from taikolab import config as cfg_mod
+    real_load = cfg_mod.load_config
+
+    def fake_load(preset_name=None, root_dir=None):
+        c = real_load(preset_name, root_dir)
+        c.settings.workspace_dir = str(tmp_path)
+        return c
+
+    import taikolab.ui.server as srv_mod
+    monkeypatch.setattr(srv_mod, "load_config", fake_load)
+
+    from taikolab.schemas import DifficultyRuleOverride
+    client = TestClient(create_app())
+    ov = SongOverrides(
+        song_id="proj_song",
+        preset="punk_gallop",
+        course_sources={"hard": "oni"},
+        disabled_courses=["oni"],
+        difficulty_overrides={"hard": DifficultyRuleOverride(star_rating=8)},
+    )
+    r_arr = client.post("/api/songs/proj_song/arrange", json=ov.model_dump())
+    assert r_arr.status_code == 200
+    diffs = [c["difficulty"] for c in r_arr.json()["chart"]["courses"]]
+    assert "hard" in diffs and "oni" not in diffs
+    hard_c = next(c for c in r_arr.json()["chart"]["courses"] if c["difficulty"] == "hard")
+    assert hard_c["level_stars"] == 8
+
+    r_save = client.post(
+        "/api/projects/save",
+        json={
+            "project_name": "My WIP Chart",
+            "mode": "song",
+            "song_id": "proj_song",
+            "overrides": ov.model_dump(),
+            "active_difficulty": "hard",
+            "playhead_sec": 1.5,
+            "lane_zoom": 400.0,
+        },
+    )
+    assert r_save.status_code == 200
+    pid = r_save.json()["project_id"]
+    assert (tmp_path / "saved_projects" / f"{pid}.taikolab.json").exists()
+    assert (tmp_path / "saved_projects" / f"{pid}.draft.tja").exists()
+
+    r_list = client.get("/api/projects")
+    assert any(p["project_id"] == pid for p in r_list.json()["projects"])
+
+    r_open = client.post(f"/api/projects/{pid}/open")
+    assert r_open.status_code == 200
+    assert r_open.json()["project"]["playhead_sec"] == 1.5
+    assert r_open.json()["project"]["overrides"]["disabled_courses"] == ["oni"]

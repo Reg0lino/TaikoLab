@@ -88,10 +88,17 @@ def track_beats_and_regions(
     from beat_this.inference import File2Beats
 
     chosen_device = device if (device == "cuda" and torch.cuda.is_available()) else "cpu"
-    tracker = File2Beats(checkpoint_path="final0", device=chosen_device, dbn=False)
-
     with ensure_wav_path(audio_path) as wav_path:
-        beats_arr, downbeats_arr = tracker(str(wav_path))
+        try:
+            tracker = File2Beats(checkpoint_path="final0", device=chosen_device, dbn=False)
+            beats_arr, downbeats_arr = tracker(str(wav_path))
+        except RuntimeError as exc:
+            if chosen_device == "cuda" and "cuda" in str(exc).lower():
+                print(f"[TaikoLab BeatThis] CUDA error ({exc}); retrying on CPU...")
+                tracker = File2Beats(checkpoint_path="final0", device="cpu", dbn=False)
+                beats_arr, downbeats_arr = tracker(str(wav_path))
+            else:
+                raise
 
     beats_list = sorted(float(t) for t in beats_arr if 0.0 <= float(t) <= duration_sec)
     raw_dbs = sorted(float(t) for t in downbeats_arr if 0.0 <= float(t) <= duration_sec)
@@ -113,7 +120,69 @@ def track_beats_and_regions(
     events.sort(key=lambda e: e.time_sec)
 
     regions = infer_tempo_regions(events, duration_sec)
+    events = _stabilize_steady_region_beats(events, regions)
     return events, regions
+
+
+def _stabilize_steady_region_beats(
+    events: list[BeatEvent],
+    regions: list[TempoRegion],
+) -> list[BeatEvent]:
+    """Fit a linear metronome grid inside steady regions (<=3.5% bar jitter)."""
+    if not events or not regions:
+        return events
+
+    out: list[BeatEvent] = []
+    for region in regions:
+        reg_events = [e for e in events if region.start_sec <= e.time_sec < region.end_sec]
+        reg_dbs = [e.time_sec for e in reg_events if e.is_downbeat]
+        if len(reg_dbs) < 6:
+            out.extend(reg_events)
+            continue
+
+        durs = [reg_dbs[i + 1] - reg_dbs[i] for i in range(len(reg_dbs) - 1)]
+        med_dur = statistics.median(durs)
+        if med_dur <= 0.25:
+            out.extend(reg_events)
+            continue
+
+        max_rel_dev = statistics.median(abs(d - med_dur) / med_dur for d in durs)
+        if max_rel_dev > 0.035:
+            out.extend(reg_events)
+            continue
+
+        # Least-squares fit t(k) = t0 + k * bar_dur across steady bars
+        n = len(reg_dbs)
+        ks = list(range(n))
+        mean_k = sum(ks) / n
+        mean_t = sum(reg_dbs) / n
+        denom = sum((k - mean_k) ** 2 for k in ks)
+        if denom <= 0:
+            out.extend(reg_events)
+            continue
+        slope = sum((k - mean_k) * (t - mean_t) for k, t in zip(ks, reg_dbs)) / denom
+        intercept = mean_t - slope * mean_k
+        if abs(slope - med_dur) / med_dur > 0.04:
+            out.extend(reg_events)
+            continue
+
+        beats_per_bar = 2 if (region.numerator == 6 and region.denominator == 8) else region.numerator
+        beats_per_bar = max(1, beats_per_bar)
+        k = 0
+        while True:
+            bar_t = intercept + k * slope
+            if bar_t >= region.end_sec - 0.05:
+                break
+            if bar_t >= max(0.0, region.start_sec - 0.05):
+                out.append(BeatEvent(time_sec=round(max(0.0, bar_t), 4), is_downbeat=True))
+                for b in range(1, beats_per_bar):
+                    sub_t = bar_t + b * (slope / beats_per_bar)
+                    if sub_t < region.end_sec - 0.02:
+                        out.append(BeatEvent(time_sec=round(sub_t, 4), is_downbeat=False))
+            k += 1
+
+    out.sort(key=lambda e: e.time_sec)
+    return out
 
 
 def infer_tempo_regions(events: list[BeatEvent], duration_sec: float) -> list[TempoRegion]:

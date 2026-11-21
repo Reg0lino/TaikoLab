@@ -1,4 +1,4 @@
-"""Import and preserve existing TJA files while applying manual note and timing edits."""
+"""Import and preserve existing TJA files while applying note, timing, level, and course edits."""
 
 from __future__ import annotations
 
@@ -9,18 +9,21 @@ from dataclasses import dataclass
 from math import lcm
 from pathlib import Path
 
-from taikolab.schemas import ChartDifficulty, ChartMeasure, SongOverrides, TaikoChart, TaikoNote
+from taikolab.exporters.tja_writer import render_course_tja
+from taikolab.schemas import ChartDifficulty, ChartMeasure, DifficultyLevel, SongOverrides, TaikoChart, TaikoNote
 
-_COURSES = {
+_COURSES: dict[str, DifficultyLevel] = {
     "easy": "easy",
     "normal": "normal",
     "hard": "hard",
     "oni": "oni",
     "edit": "ura",
 }
+_COURSE_ORDER: tuple[DifficultyLevel, ...] = ("easy", "normal", "hard", "oni", "ura")
 _NOTE_ROW = re.compile(r"^(\s*)([0-8]*)(\s*,.*)$")
 _BALLOON_ROW = re.compile(r"^(\s*BALLOON\s*:\s*).*$", re.IGNORECASE)
 _OFFSET_ROW = re.compile(r"^(\s*OFFSET\s*:\s*).*$", re.IGNORECASE)
+_LEVEL_ROW = re.compile(r"^(\s*LEVEL\s*:\s*).*$", re.IGNORECASE)
 
 
 @dataclass
@@ -35,6 +38,8 @@ class TjaDocument:
     original_notes: dict[tuple[str, int], list[int]]
     balloon_rows: dict[str, tuple[int | None, int, list[int]]]
     course_starts: dict[str, int]
+    course_spans: dict[str, tuple[int, int]]
+    level_lines: dict[str, int]
     offset_line: int | None
     first_course_line: int
     audio_path: Path | None
@@ -92,12 +97,15 @@ def load_tja(path: Path) -> TjaDocument:
     original_notes: dict[tuple[str, int], list[int]] = {}
     balloon_rows: dict[str, tuple[int | None, int, list[int]]] = {}
     course_starts: dict[str, int] = {}
+    course_spans: dict[str, tuple[int, int]] = {}
+    level_lines: dict[str, int] = {}
     courses: list[ChartDifficulty] = []
     current_name: str | None = None
-    current_diff: str | None = None
+    current_diff: DifficultyLevel | None = None
     current_level = 5
     current_balloons: list[int] = []
     balloon_line: int | None = None
+    course_header_line: int | None = None
     start_line: int | None = None
     measures: list[ChartMeasure] = []
     bpm = base_bpm
@@ -124,7 +132,9 @@ def load_tja(path: Path) -> TjaDocument:
                 current_level = 5
                 current_balloons = []
                 balloon_line = None
+                course_header_line = line_index
             elif key == "LEVEL" and current_diff:
+                level_lines[current_diff] = line_index
                 try:
                     current_level = int(value.rstrip("+"))
                 except ValueError as exc:
@@ -170,9 +180,14 @@ def load_tja(path: Path) -> TjaDocument:
                 )
             )
             balloon_rows[current_diff] = (balloon_line, start_line or line_index, list(current_balloons))
+            course_spans[current_diff] = (
+                course_header_line if course_header_line is not None else (start_line or line_index),
+                line_index,
+            )
             in_chart = False
             current_diff = None
             current_name = None
+            course_header_line = None
             continue
 
         if stripped.startswith("#"):
@@ -259,6 +274,8 @@ def load_tja(path: Path) -> TjaDocument:
         original_notes=original_notes,
         balloon_rows=balloon_rows,
         course_starts=course_starts,
+        course_spans=course_spans,
+        level_lines=level_lines,
         offset_line=offset_line,
         first_course_line=first_course_line,
         audio_path=audio_path,
@@ -298,6 +315,25 @@ def apply_tja_edits(document: TjaDocument, overrides: SongOverrides) -> TaikoCha
             for measure in course.measures:
                 measure.start_sec = max(0.0, measure.start_sec + actual_delta)
                 measure.end_sec = max(measure.start_sec + 0.12, measure.end_sec + actual_delta)
+
+    if overrides.course_sources:
+        by_diff = {c.difficulty: c for c in chart.courses}
+        for target_diff, source_diff in overrides.course_sources.items():
+            if target_diff == source_diff:
+                continue
+            src_course = by_diff.get(source_diff)
+            if src_course is None:
+                raise ValueError(f"Source course '{source_diff}' is not present in this TJA.")
+            cloned = src_course.model_copy(deep=True)
+            cloned.difficulty = target_diff
+            by_diff[target_diff] = cloned
+        chart.courses = [by_diff[d] for d in _COURSE_ORDER if d in by_diff]
+
+    if overrides.disabled_courses:
+        disabled = set(overrides.disabled_courses)
+        chart.courses = [c for c in chart.courses if c.difficulty not in disabled]
+        if not chart.courses:
+            raise ValueError("At least one course must remain in the TJA chart.")
 
     for course in chart.courses:
         prefix = f"{course.difficulty}:"
@@ -362,6 +398,10 @@ def apply_tja_edits(document: TjaDocument, overrides: SongOverrides) -> TaikoCha
 
         if course.difficulty in overrides.balloon_counts_by_course:
             course.balloon_counts = list(overrides.balloon_counts_by_course[course.difficulty])
+
+        diff_ov = overrides.difficulty_overrides.get(course.difficulty)
+        if diff_ov and diff_ov.star_rating is not None:
+            course.level_stars = diff_ov.star_rating
     return chart
 
 
@@ -377,10 +417,28 @@ def _course_normalizes_scroll(measures: list[ChartMeasure]) -> float | None:
     return None
 
 
-def render_tja_edits(document: TjaDocument, chart: TaikoChart) -> bytes:
+def _render_new_or_cloned_course_lines(course: ChartDifficulty, chart: TaikoChart) -> list[str]:
+    norm_speed = _course_normalizes_scroll(course.measures)
+    base_scroll = course.measures[0].scroll if course.measures else 0.5
+    return render_course_tja(
+        course=course,
+        initial_bpm=chart.base_bpm,
+        base_scroll=base_scroll,
+        bpm_deadzone=0.001,
+        normalize_scroll=norm_speed is not None,
+        target_highway_speed=norm_speed if norm_speed is not None else 101.343,
+    )
+
+
+def render_tja_edits(
+    document: TjaDocument,
+    chart: TaikoChart,
+    overrides: SongOverrides | None = None,
+) -> bytes:
     replacements: dict[int, str] = {}
     deletions: set[int] = set()
     before_inserts: dict[int, list[str]] = {}
+    appends: list[str] = []
 
     if abs(chart.offset_sec - document.chart.offset_sec) >= 0.0005:
         tja_offset = -float(chart.offset_sec)
@@ -394,17 +452,56 @@ def render_tja_edits(document: TjaDocument, chart: TaikoChart) -> bytes:
             before_inserts.setdefault(document.first_course_line, []).append(f"OFFSET:{tja_offset:.3f}")
 
     orig_courses = {c.difficulty: c for c in document.chart.courses}
+    active_courses = {c.difficulty: c for c in chart.courses}
+    cloned_targets = {
+        dst
+        for dst, src in (overrides.course_sources.items() if overrides else ())
+        if dst != src
+    }
+
+    for diff, (span_start, span_end) in document.course_spans.items():
+        if diff not in active_courses:
+            for idx in range(span_start, span_end + 1):
+                deletions.add(idx)
+            if span_end + 1 < len(document.lines) and not document.lines[span_end + 1].strip():
+                deletions.add(span_end + 1)
 
     for course in chart.courses:
-        orig_course = orig_courses.get(course.difficulty)
+        diff = course.difficulty
+        orig_course = orig_courses.get(diff)
+        is_new_or_cloned = (diff not in document.course_spans) or (diff in cloned_targets)
+
+        if is_new_or_cloned:
+            block_lines = _render_new_or_cloned_course_lines(course, chart)
+            if diff in document.course_spans:
+                span_start, span_end = document.course_spans[diff]
+                for idx in range(span_start, span_end + 1):
+                    deletions.add(idx)
+                before_inserts.setdefault(span_start, []).extend(block_lines)
+            else:
+                if appends or (document.lines and document.lines[-1].strip()):
+                    appends.append("")
+                appends.extend(block_lines)
+            continue
+
+        if orig_course and course.level_stars != orig_course.level_stars:
+            lvl_idx = document.level_lines.get(diff)
+            if lvl_idx is not None:
+                match = _LEVEL_ROW.match(document.lines[lvl_idx])
+                prefix = match.group(1) if match else "LEVEL:"
+                replacements[lvl_idx] = f"{prefix}{course.level_stars}"
+            else:
+                span_start = document.course_spans[diff][0]
+                before_inserts.setdefault(span_start + 1, []).append(f"LEVEL:{course.level_stars}")
+
         for measure in course.measures:
-            key = (course.difficulty, measure.measure_idx)
+            key = (diff, measure.measure_idx)
             if key not in document.rows or measure.notes == document.original_notes[key]:
                 continue
             line_index, prefix, suffix = document.rows[key]
             replacements[line_index] = f"{prefix}{''.join(str(note) for note in measure.notes)}{suffix}"
 
-        original_balloon = document.balloon_rows.get(course.difficulty, (None, -1, []))
+        original_balloon = document.balloon_rows.get(diff, (None, -1, []))
         line_index, start_line, original_counts = original_balloon
         if course.balloon_counts != original_counts:
             value = ",".join(str(count) for count in course.balloon_counts)
@@ -424,10 +521,10 @@ def render_tja_edits(document: TjaDocument, chart: TaikoChart) -> bytes:
                 target_speed = _course_normalizes_scroll(orig_course.measures)
                 active_bpm = chart.base_bpm
                 active_scroll = orig_course.measures[0].scroll if orig_course.measures else 0.5
-                prev_boundary = document.course_starts.get(course.difficulty, -1) + 1
+                prev_boundary = document.course_starts.get(diff, -1) + 1
 
                 for measure in course.measures:
-                    key = (course.difficulty, measure.measure_idx)
+                    key = (diff, measure.measure_idx)
                     if key not in document.rows:
                         continue
                     row_line = document.rows[key][0]
@@ -475,21 +572,27 @@ def render_tja_edits(document: TjaDocument, chart: TaikoChart) -> bytes:
         if line_idx in deletions:
             continue
         out_lines.append(replacements.get(line_idx, orig_line))
+    if appends:
+        out_lines.extend(appends)
 
     text = document.newline.join(out_lines)
-    if document.trailing_newline:
+    if document.trailing_newline or appends:
         text += document.newline
     return text.encode(document.encoding)
 
 
-def save_tja_edits(document: TjaDocument, chart: TaikoChart) -> Path:
+def save_tja_edits(
+    document: TjaDocument,
+    chart: TaikoChart,
+    overrides: SongOverrides | None = None,
+) -> Path:
     backup_path = document.path.with_suffix(document.path.suffix + ".bak")
     if not backup_path.exists():
         shutil.copy2(document.path, backup_path)
 
     temporary_path = document.path.with_name(document.path.name + ".tmp")
     try:
-        temporary_path.write_bytes(render_tja_edits(document, chart))
+        temporary_path.write_bytes(render_tja_edits(document, chart, overrides=overrides))
         os.replace(temporary_path, document.path)
     except OSError:
         temporary_path.unlink(missing_ok=True)

@@ -57,6 +57,7 @@ class DrumHit(BaseModel):
     drum_class: DrumClass
     velocity: float = Field(default=0.8, ge=0.0, le=1.0)
     source: Literal["adtof", "dsp", "hybrid", "tab"] = "hybrid"
+    pitch: int | None = Field(default=None, ge=0, le=127)
 
 
 class OnsetEvent(BaseModel):
@@ -141,13 +142,13 @@ class DifficultyRuleOverride(BaseModel):
 
 
 class ChartControlSettings(BaseModel):
-    target_highway_speed: float | None = Field(default=None, ge=70.0, le=160.0)
+    target_highway_speed: float | None = Field(default=None, ge=70.0, le=280.0)
     big_note_threshold: float | None = Field(default=None, ge=0.6, le=0.98)
     quiet_guitar_rms_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     quiet_guitar_behavior: Literal["downbeat", "empty"] | None = None
     fill_rolls_by_course: dict[DifficultyLevel, int] = Field(default_factory=dict)
     # Read older saved settings that used one cap for every course.
-    fill_rolls_per_course: int | None = Field(default=None, ge=0, le=3)
+    fill_rolls_per_course: int | None = Field(default=None, ge=0, le=12)
     difficulty_overrides: dict[DifficultyLevel, DifficultyRuleOverride] = Field(
         default_factory=dict
     )
@@ -155,9 +156,9 @@ class ChartControlSettings(BaseModel):
     @model_validator(mode="after")
     def _validate_course_roll_caps(self) -> ChartControlSettings:
         for difficulty, cap in self.fill_rolls_by_course.items():
-            if not 0 <= cap <= 3:
+            if not 0 <= cap <= 12:
                 raise ValueError(
-                    f"Fill-roll cap for {difficulty} must be between 0 and 3"
+                    f"Fill-roll cap for {difficulty} must be between 0 and 12"
                 )
         return self
 
@@ -175,6 +176,8 @@ class SongOverrides(ChartControlSettings):
     balloon_counts_by_course: dict[DifficultyLevel, list[int]] = Field(default_factory=dict)
     custom_downbeats: list[DownbeatMarker] = Field(default_factory=list)
     barline_times: list[float] = Field(default_factory=list)
+    course_sources: dict[DifficultyLevel, DifficultyLevel] = Field(default_factory=dict)
+    disabled_courses: list[DifficultyLevel] = Field(default_factory=list)
     tap_latency_ms: float = Field(default=0.0, ge=-250.0, le=250.0)
 
     @model_validator(mode="after")
@@ -237,3 +240,16 @@ class TaikoChart(BaseModel):
     base_bpm: float = Field(gt=20.0, lt=500.0)
     genre: str = "Punk / Hardcore"
     courses: list[ChartDifficulty] = Field(default_factory=list)
+
+
+class SavedProject(BaseModel):
+    schema_version: str = "1.0"
+    project_name: str
+    mode: Literal["song", "imported_tja"]
+    song_id: str | None = None
+    source_tja_path: str | None = None
+    overrides: SongOverrides
+    active_difficulty: DifficultyLevel = "hard"
+    playhead_sec: float = Field(default=0.0, ge=0.0)
+    lane_zoom: float = Field(default=340.0, ge=120.0, le=800.0)
+    saved_at: str = ""

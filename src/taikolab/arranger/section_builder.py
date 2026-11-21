@@ -118,14 +118,17 @@ def build_measure_plans(
             else:
                 mode = "hybrid" if difficulty in ("oni", "ura") else "drums"
 
-        # If vocals are silent during an instrumental/intro, follow drums (or solo guitar if no drums!)
-        if difficulty in ("easy", "normal") and mode == "vocals" and len(bar_vocals) == 0:
+        # Keep rhythms fluid: avoid dead bars when vocals or drums briefly drop out.
+        if difficulty in ("easy", "normal") and mode == "vocals" and len(bar_vocals) < 2:
             if len(bar_drums) >= 2:
                 mode = "drums"
             elif len(bar_guitars) >= 2 or low_energy_guitar:
                 mode = "guitar"
-        elif mode == "drums" and len(bar_drums) == 0 and (len(bar_guitars) >= 2 or low_energy_guitar):
-            mode = "guitar"
+        elif mode == "drums" and len(bar_drums) <= 2:
+            if len(bar_guitars) >= 2 or low_energy_guitar:
+                mode = "hybrid" if len(bar_drums) > 0 else "guitar"
+            elif len(bar_vocals) >= 2 and len(bar_drums) == 0:
+                mode = "vocals"
 
         ov = _find_section_override(mid, overrides)
         drum_sens = 1.0

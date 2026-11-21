@@ -127,3 +127,27 @@ def test_tja_editor_updates_bpmchange_and_offset_when_barlines_warped(tmp_path: 
     assert round(hard.measures[0].bpm, 1) == 100.0
     assert round(hard.measures[1].bpm, 1) == 150.0
     assert hard.measures[0].notes[0] == TaikoNote.DON.value
+def test_tja_editor_clones_moves_and_edits_star_rating(tmp_path: Path):
+    path = tmp_path / "single-oni.tja"
+    _write_tja(path)
+    path.write_text(path.read_text(encoding="utf-8").replace("COURSE:Hard", "COURSE:Oni"), encoding="utf-8")
+    doc = load_tja(path)
+
+    from taikolab.schemas import DifficultyRuleOverride
+    ov = SongOverrides(
+        song_id="imported",
+        course_sources={"hard": "oni"},
+        disabled_courses=["oni"],
+        difficulty_overrides={"hard": DifficultyRuleOverride(star_rating=7)},
+    )
+    chart = apply_tja_edits(doc, ov)
+    save_tja_edits(doc, chart, overrides=ov)
+
+    saved_text = path.read_text(encoding="utf-8")
+    assert "COURSE:Hard" in saved_text
+    assert "COURSE:Oni" not in saved_text
+    assert "LEVEL:7" in saved_text
+
+    reopened = load_tja(path)
+    assert [c.difficulty for c in reopened.chart.courses] == ["hard"]
+    assert reopened.chart.courses[0].level_stars == 7

@@ -43,7 +43,8 @@ _ACCENT = "#54a6ff"
 _DEFAULT_PRESET = "punk_gallop"
 _DEFAULT_DENSITY_PERCENT = 100.0
 _DEFAULT_PHRASE_VARIATION = {"hard": 0.0, "oni": 0.0}
-_DEFAULT_FILL_ROLLS_BY_COURSE = {"easy": 3, "normal": 3, "hard": 0, "oni": 0}
+_DEFAULT_FILL_ROLLS_BY_COURSE = {"easy": 4, "normal": 4, "hard": 2, "oni": 2}
+DEV_CHART_VERSION = "v0.2"
 
 
 def _style_dark(root: tk.Tk) -> None:
@@ -271,6 +272,12 @@ class TaikoWizard:
             )
             for difficulty in ("easy", "normal", "hard", "oni")
         }
+        self.use_demucs_stems = tk.BooleanVar(
+            value=bool(preferences.get("use_demucs_stems", False))
+        )
+        self.append_version_tag = tk.BooleanVar(
+            value=bool(preferences.get("append_version_tag", True))
+        )
         self.api_key = tk.StringVar(value=get_saved_audiometa_api_key() or "")
         self.metadata_status = tk.StringVar(value="Audio tags and filename suggestions are local.")
         self.output_preview = tk.StringVar()
@@ -296,6 +303,7 @@ class TaikoWizard:
         self._update_output_preview()
         self.title.trace_add("write", self._update_output_preview)
         self.artist.trace_add("write", self._update_output_preview)
+        self.append_version_tag.trace_add("write", self._update_output_preview)
         root.after(100, self._drain_events)
 
     def _build_widgets(self) -> None:
@@ -355,6 +363,16 @@ class TaikoWizard:
             style="Muted.TLabel",
             wraplength=800,
         ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(
+            files,
+            text="Separate stems with Demucs (GPU heavy — leave unchecked for fast lightweight MIDI builds)",
+            variable=self.use_demucs_stems,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(
+            files,
+            text=f"Append dev version tag (--auto{DEV_CHART_VERSION}) to in-game chart title",
+            variable=self.append_version_tag,
+        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         metadata = ttk.Frame(outer, style="Surface.TFrame", padding=14)
         metadata.grid(row=3, column=0, sticky="ew", pady=(0, 10))
@@ -416,7 +434,7 @@ class TaikoWizard:
             "Highway speed",
             self.highway_speed,
             70,
-            160,
+            280,
             1,
             "{:.0f}",
             default_value=self.cfg.settings.target_highway_speed,
@@ -506,7 +524,7 @@ class TaikoWizard:
                 difficulty.title(),
                 self.fill_roll_caps[difficulty],
                 0,
-                3,
+                12,
                 1,
                 "{:.0f}",
                 default_value=_DEFAULT_FILL_ROLLS_BY_COURSE[difficulty],
@@ -827,49 +845,109 @@ class TaikoWizard:
                 f"Selected Audiometa result {selection.track_id}. Review the title and artist before building."
             )
 
+    @staticmethod
+    def format_chart_title(raw_title: str, append_version: bool) -> str:
+        suffix = f"--auto{DEV_CHART_VERSION}" if append_version else "-auto"
+        return f"{raw_title.strip()} {suffix}"
+
     def _update_output_preview(self, *_args: object) -> None:
+        suffix = f"--auto{DEV_CHART_VERSION}" if self.append_version_tag.get() else "-auto"
         if not self.title.get().strip() or not self.artist.get().strip():
-            self.output_preview.set("Folder and TJA will use artist-title-auto; the chart title will end in -auto.")
+            self.output_preview.set(f"Folder and TJA will use artist-title-auto; in-game title will end in {suffix}.")
             return
         try:
             song_id = make_song_id(self.artist.get(), self.title.get())
         except ValueError:
             self.output_preview.set("Enter a title and artist containing letters or numbers.")
             return
-        chart_title = f"{self.title.get().strip()} -auto"
+        chart_title = self.format_chart_title(self.title.get(), self.append_version_tag.get())
         self.output_preview.set(
             f"Workspace: workspace\\{song_id}\\   |   TJA: {song_id}.tja   |   In-game title: {chart_title}"
         )
 
-    def _choose_song_id(self) -> tuple[str, bool] | None:
+    def _choose_song_id(self) -> tuple[str, bool, bool] | None:
         base_id = make_song_id(self.artist.get(), self.title.get())
         songs_dir = Path(self.songs_directory.get()).expanduser()
         workspace_dir = self.cfg.song_dir(base_id).parent
+
+        version_slug = DEV_CHART_VERSION.replace(".", "-")
+        versioned_id = f"{base_id}-{version_slug}"
+        v_idx = 2
+        while (workspace_dir / versioned_id).exists() or (songs_dir / versioned_id).exists():
+            versioned_id = f"{base_id}-{version_slug}-{v_idx}"
+            v_idx += 1
+
         candidates = [base_id]
         variant = 2
         while (workspace_dir / candidates[-1]).exists() or (songs_dir / candidates[-1]).exists():
             candidates.append(make_song_id(self.artist.get(), self.title.get(), variant=variant))
             variant += 1
 
-        song_id = base_id
         workspace_exists = (workspace_dir / base_id).exists()
         simulator_exists = (songs_dir / base_id).exists()
         if not workspace_exists and not simulator_exists:
-            return song_id, False
+            return base_id, False, self.append_version_tag.get()
 
-        create_new = candidates[-1]
-        answer = messagebox.askyesnocancel(
-            "Song already exists",
-            f"'{base_id}' already exists in TaikoLab or the simulator.\n\n"
-            "Yes: back up the existing TaikoLab song folder and replace this auto chart.\n"
-            f"No: create a separate chart named '{create_new}'.\n"
-            "Cancel: stop without changing files.",
-        )
-        if answer is None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Existing chart options")
+        dialog.configure(background=_BACKGROUND)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        result: dict[str, object] = {"choice": None}
+        ver_var = tk.BooleanVar(value=self.append_version_tag.get())
+
+        frame = ttk.Frame(dialog, style="Surface.TFrame", padding=18)
+        frame.pack(fill="both", expand=True, padx=12, pady=12)
+        ttk.Label(frame, text="Chart Already Exists", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=f"'{base_id}' already exists in TaikoLab or your YataiDON Songs folder.\nChoose how to save this build:",
+            style="TLabel",
+            wraplength=460,
+        ).pack(anchor="w", pady=(6, 10))
+        ttk.Checkbutton(
+            frame,
+            text=f"Tag chart title with --auto{DEV_CHART_VERSION} (creates separate '{versioned_id}' when keeping previous)",
+            variable=ver_var,
+        ).pack(anchor="w", pady=(0, 12))
+
+        btn_row = ttk.Frame(frame, style="Surface.TFrame")
+        btn_row.pack(fill="x")
+
+        def choose(mode: str | None) -> None:
+            result["choice"] = mode
+            self.append_version_tag.set(ver_var.get())
+            dialog.destroy()
+
+        ttk.Button(
+            btn_row,
+            text="Keep Previous & Write New Version",
+            style="Accent.TButton",
+            command=lambda: choose("new"),
+        ).pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            btn_row,
+            text="Archive Previous & Replace Existing",
+            command=lambda: choose("replace"),
+        ).pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            btn_row,
+            text="Cancel",
+            command=lambda: choose(None),
+        ).pack(fill="x")
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose(None))
+        self.root.wait_window(dialog)
+
+        choice = result["choice"]
+        if choice is None:
             return None
-        if answer is False:
-            return create_new, False
-        return song_id, True
+        if choice == "new":
+            new_id = versioned_id if ver_var.get() else candidates[-1]
+            return new_id, False, ver_var.get()
+        return base_id, True, ver_var.get()
 
     def _chart_control_settings(self) -> ChartControlSettings:
         source_modes = {
@@ -939,17 +1017,20 @@ class TaikoWizard:
             return
         if selection is None:
             return
-        song_id, replace_existing = selection
-        title = f"{self.title.get().strip()} -auto"
+        song_id, replace_existing, use_version_tag = selection
+        title = self.format_chart_title(self.title.get(), use_version_tag)
         artist = self.artist.get().strip()
         preset = _DEFAULT_PRESET
         metadata_source = self.metadata_source
         chart_controls = self._chart_control_settings()
+        use_demucs = bool(self.use_demucs_stems.get())
         try:
             save_wizard_preferences(
                 self.cfg.root_dir,
                 str(songs_dir),
                 chart_controls=chart_controls.model_dump(exclude_none=True),
+                use_demucs_stems=use_demucs,
+                append_version_tag=use_version_tag,
             )
         except (OSError, ValueError) as exc:
             messagebox.showerror("Could not save setting", str(exc))
@@ -973,6 +1054,7 @@ class TaikoWizard:
                 songs_dir,
                 replace_existing,
                 chart_controls,
+                use_demucs,
             ),
             daemon=True,
         ).start()
@@ -989,6 +1071,7 @@ class TaikoWizard:
         songs_dir: Path,
         replace_existing: bool,
         chart_controls: ChartControlSettings | None = None,
+        use_demucs: bool = False,
     ) -> None:
         song_dir = self.cfg.song_dir(song_id)
         had_workspace = song_dir.exists()
@@ -1063,6 +1146,8 @@ class TaikoWizard:
             ]
             if staged_midi:
                 command.extend(("--tab", str(staged_midi)))
+                if use_demucs:
+                    command.append("--use-stems")
             else:
                 command.append("--force")
             self.events.put(("log", f"Staged audio: {staged_audio.name}"))

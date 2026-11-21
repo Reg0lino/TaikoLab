@@ -65,10 +65,19 @@ def extract_dsp_drum_hits(drums_path: Path) -> list[DrumHit]:
     mid_y = _bandpass(y, sr, 200.0, 2400.0)
     high_y = _bandpass(y, sr, 5000.0, 16000.0)
 
+    tom_y = _bandpass(y, sr, 140.0, 260.0)
+
     kicks = _detect_band_peaks(low_y, sr, "kick", min_gap_sec=0.055, rel_prominence=0.22)
     snares = _detect_band_peaks(mid_y, sr, "snare", min_gap_sec=0.065, rel_prominence=0.24)
     crashes = _detect_band_peaks(high_y, sr, "crash", min_gap_sec=0.14, rel_prominence=0.35)
+    raw_toms = _detect_band_peaks(tom_y, sr, "tom", min_gap_sec=0.070, rel_prominence=0.30)
 
-    all_hits = kicks + snares + crashes
+    core_times = [h.time_sec for h in kicks + snares]
+    toms = [
+        t for t in raw_toms
+        if not any(abs(t.time_sec - ct) <= 0.035 for ct in core_times)
+    ]
+
+    all_hits = kicks + snares + toms + crashes
     all_hits.sort(key=lambda h: h.time_sec)
     return all_hits

@@ -39,7 +39,7 @@ _GM_DRUM_MAP: dict[int, DrumClass] = {
 }
 
 
-def run_adtof_transcription(drums_path: Path, device: str = "cuda") -> list[DrumHit]:
+def run_adtof_transcription(drums_path: Path, device: str = "cpu") -> list[DrumHit]:
     """Run ADTOF-pytorch on a drum stem or mix and return DrumHit events."""
     import torch
     from adtof_pytorch import transcribe_to_midi
@@ -54,7 +54,15 @@ def run_adtof_transcription(drums_path: Path, device: str = "cuda") -> list[Drum
             kwargs: dict = {}
             if "device" in sig.parameters:
                 kwargs["device"] = chosen_device
-            transcribe_to_midi(str(wav_path), str(mid_path), **kwargs)
+            try:
+                transcribe_to_midi(str(wav_path), str(mid_path), **kwargs)
+            except RuntimeError as exc:
+                if chosen_device == "cuda" and "cuda" in str(exc).lower() and "device" in sig.parameters:
+                    print(f"[TaikoLab ADTOF] CUDA error ({exc}); retrying on CPU...")
+                    kwargs["device"] = "cpu"
+                    transcribe_to_midi(str(wav_path), str(mid_path), **kwargs)
+                else:
+                    raise
             pm = pretty_midi.PrettyMIDI(str(mid_path))
         finally:
             mid_path.unlink(missing_ok=True)
@@ -70,6 +78,7 @@ def run_adtof_transcription(drums_path: Path, device: str = "cuda") -> list[Drum
                     drum_class=d_cls,
                     velocity=round(vel, 3),
                     source="adtof",
+                    pitch=int(note.pitch),
                 )
             )
     hits.sort(key=lambda h: h.time_sec)
@@ -91,9 +100,9 @@ def transcribe_drums_hybrid(
     dsp_hits = extract_dsp_drum_hits(drums_path)
     merged: list[DrumHit] = [h.model_copy() for h in adtof_hits]
 
-    # Rescue missed strong DSP kicks/snares/crashes that have no matching ADTOF class within +/- 38ms
+    # Rescue missed DSP kicks/snares/toms/crashes on isolated drum stems (including softer fills)
     for dh in dsp_hits:
-        if dh.velocity < 0.42:
+        if dh.velocity < 0.36:
             continue
         matched = False
         for ah in merged:
@@ -102,8 +111,10 @@ def transcribe_drums_hybrid(
                 ah.source = "hybrid"
                 matched = True
                 break
-        if not matched and dh.drum_class in ("kick", "snare", "crash") and dh.velocity >= 0.55:
-            merged.append(dh)
+        if not matched and dh.drum_class in ("kick", "snare", "tom", "crash"):
+            min_rescue_vel = 0.52 if dh.drum_class == "crash" else 0.40
+            if dh.velocity >= min_rescue_vel:
+                merged.append(dh)
 
     merged.sort(key=lambda h: h.time_sec)
     return merged

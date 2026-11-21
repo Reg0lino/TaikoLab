@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import replace
 from math import lcm
 
-from taikolab.arranger.hori_filter import apply_hori_ergonomics
+from taikolab.arranger.hori_filter import build_ergonomic_measures_with_balloons
 from taikolab.arranger.mapper_drums import PlacedCandidate, map_drum_hits
 from taikolab.arranger.mapper_fusion import apply_guitar_fusion
-from taikolab.arranger.mapper_vocals import map_vocal_cadence
+from taikolab.arranger.mapper_vocals import map_vocal_cadence, weave_hybrid_vocal_hooks
 from taikolab.arranger.quantizer import MeasureSlot, time_to_measure_slot
 from taikolab.arranger.section_builder import build_measure_plans
 from taikolab.config import AppConfig
@@ -69,11 +69,10 @@ def _slots_differ(base_slots: list[MeasureSlot], warped_slots: list[MeasureSlot]
     )
 
 
-def _repeated_drum_runs(
+def _measure_drum_signatures(
     candidates: dict[tuple[int, int], PlacedCandidate],
     measure_count: int,
-    minimum_length: int = 4,
-) -> list[list[int]]:
+) -> list[tuple[tuple[int, int, str], ...]]:
     signatures = []
     for measure_idx in range(measure_count):
         signatures.append(
@@ -85,7 +84,15 @@ def _repeated_drum_runs(
                 )
             )
         )
+    return signatures
 
+
+def _repeated_drum_runs(
+    candidates: dict[tuple[int, int], PlacedCandidate],
+    measure_count: int,
+    minimum_length: int = 4,
+) -> list[list[int]]:
+    signatures = _measure_drum_signatures(candidates, measure_count)
     runs: list[list[int]] = []
     start = 0
     while start < len(signatures):
@@ -96,6 +103,43 @@ def _repeated_drum_runs(
             runs.append(list(range(start, end)))
         start = end
     return runs
+
+
+def _repeated_phrase_occurrences(
+    candidates: dict[tuple[int, int], PlacedCandidate],
+    measure_count: int,
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Return (one_bar_runs, multi_bar_repeat_phrases) without overlapping baselines."""
+    signatures = _measure_drum_signatures(candidates, measure_count)
+    one_bar_runs = _repeated_drum_runs(candidates, measure_count, minimum_length=4)
+    covered_by_runs = {m for run in one_bar_runs for m in run}
+
+    multi_repeats: list[list[int]] = []
+    seen_phrases: dict[tuple[tuple[tuple[int, int, str], ...], ...], int] = {}
+
+    for phrase_len in (4, 2):
+        idx = 0
+        while idx + phrase_len <= measure_count:
+            if any(m in covered_by_runs for m in range(idx, idx + phrase_len)):
+                idx += 1
+                continue
+            block = tuple(signatures[idx : idx + phrase_len])
+            if not all(block):
+                idx += 1
+                continue
+            if block in seen_phrases:
+                first_idx = seen_phrases[block]
+                if idx >= first_idx + phrase_len:
+                    phrase_bars = list(range(idx, idx + phrase_len))
+                    multi_repeats.append(phrase_bars)
+                    covered_by_runs.update(phrase_bars)
+                    idx += phrase_len
+                    continue
+            else:
+                seen_phrases[block] = idx
+            idx += 1
+
+    return one_bar_runs, multi_repeats
 
 
 def _apply_repeated_phrase_color_variation(
@@ -113,37 +157,61 @@ def _apply_repeated_phrase_color_variation(
         TaikoNote.BIG_DON.value: TaikoNote.BIG_KAT.value,
         TaikoNote.BIG_KAT.value: TaikoNote.BIG_DON.value,
     }
-    eligible: list[tuple[int, int]] = []
-    for run in _repeated_drum_runs(drum_candidates, measure_count):
-        for measure_idx in run[1:]:
-            for key, original in drum_candidates.items():
-                if (
-                    key[0] != measure_idx
-                    or key[1] == 0
-                    or not original.source.startswith("drum:")
-                ):
-                    continue
-                current = candidates.get(key)
-                if (
-                    current is not None
-                    and current.source.startswith("drum:")
-                    and current.note_type in color_swaps
-                ):
-                    eligible.append(key)
+    one_bar_runs, multi_repeats = _repeated_phrase_occurrences(drum_candidates, measure_count)
+    repeat_bars: list[tuple[int, bool]] = []
+    for run in one_bar_runs:
+        for m_idx in run[1:]:
+            repeat_bars.append((m_idx, m_idx == run[-1]))
+    for phrase in multi_repeats:
+        for m_idx in phrase:
+            repeat_bars.append((m_idx, m_idx == phrase[-1]))
 
+    # Prefer offbeat hits & phrase-turnaround embellishments; protect Beat 2/4 backbeat snares first.
+    tier1: list[tuple[int, int]] = []
+    tier2: list[tuple[int, int]] = []
+    for measure_idx, is_turnaround in repeat_bars:
+        for key, original in sorted(drum_candidates.items()):
+            if (
+                key[0] != measure_idx
+                or key[1] == 0
+                or not original.source.startswith("drum:")
+            ):
+                continue
+            current = candidates.get(key)
+            if (
+                current is None
+                or not current.source.startswith("drum:")
+                or current.note_type not in color_swaps
+            ):
+                continue
+            is_offbeat = (key[1] % 4) != 0
+            is_backbeat_snare = original.source == "drum:snare" and key[1] in (4, 12)
+            if is_offbeat or (is_turnaround and not is_backbeat_snare):
+                tier1.append(key)
+            else:
+                tier2.append(key)
+
+    eligible = tier1 + tier2
     if not eligible:
         return candidates
 
     selected_count = min(len(eligible), round(len(eligible) * min(1.0, intensity)))
     selected_count = max(1, selected_count)
-    if selected_count == len(eligible):
-        selected = eligible
-    elif selected_count == 1:
-        selected = [eligible[len(eligible) // 2]]
+    if selected_count <= len(tier1):
+        pool = tier1
+        count = selected_count
+    else:
+        pool = eligible
+        count = selected_count
+
+    if count == len(pool):
+        selected = pool
+    elif count == 1:
+        selected = [pool[len(pool) // 2]]
     else:
         selected = [
-            eligible[round(index * (len(eligible) - 1) / (selected_count - 1))]
-            for index in range(selected_count)
+            pool[round(index * (len(pool) - 1) / (count - 1))]
+            for index in range(count)
         ]
 
     varied = dict(candidates)
@@ -160,26 +228,35 @@ def _add_repeated_phrase_ride_accents(
     slots: list[MeasureSlot],
     difficulty: DifficultyLevel,
 ) -> dict[tuple[int, int], PlacedCandidate]:
-    if difficulty not in ("hard", "oni"):
+    if difficulty not in ("hard", "oni", "ura"):
         return candidates
 
-    repeated_runs = _repeated_drum_runs(drum_candidates, len(slots))
+    one_bar_runs, multi_repeats = _repeated_phrase_occurrences(drum_candidates, len(slots))
     if difficulty == "hard":
-        late_runs = [run for run in repeated_runs if run[-1] + 1 >= 0.75 * len(slots)]
-        repeated_runs = late_runs[-1:] if late_runs else []
-    if not repeated_runs:
+        late_runs = [run for run in one_bar_runs if run[-1] + 1 >= 0.75 * len(slots)]
+        selected_runs = late_runs[-1:] if late_runs else []
+        # For Hard multi-bar repeats, embellish turnaround bars in repeated phrases
+        for phrase in multi_repeats:
+            selected_runs.append([phrase[-1]])
+    else:
+        selected_runs = list(one_bar_runs) + list(multi_repeats)
+
+    if not selected_runs:
         return candidates
 
     ride_hits_by_slot: dict[tuple[int, int], DrumHit] = {}
     for hit in drum_hits:
-        if hit.drum_class != "ride":
+        if hit.drum_class not in ("ride", "hihat"):
             continue
         location = time_to_measure_slot(hit.time_sec, slots)
         if location is None:
             continue
         key = location
         current = ride_hits_by_slot.get(key)
-        if current is None or hit.velocity > current.velocity:
+        # Strongly prefer actual ride hits over hi-hat chatter
+        score = hit.velocity + (0.25 if hit.drum_class == "ride" else 0.0)
+        cur_score = (current.velocity + (0.25 if current.drum_class == "ride" else 0.0)) if current else -1.0
+        if current is None or score > cur_score:
             ride_hits_by_slot[key] = hit
 
     varied = dict(candidates)
@@ -187,7 +264,7 @@ def _add_repeated_phrase_ride_accents(
     oni_patterns = ((2, 10), (2, 6, 10, 14), (6, 14), (2, 6, 10, 14))
     patterns = hard_patterns if difficulty == "hard" else oni_patterns
 
-    for run in repeated_runs:
+    for run in selected_runs:
         for repeat_idx, measure_idx in enumerate(run):
             slot = slots[measure_idx]
             if slot.numerator != 4 or slot.denominator != 4 or slot.grid_size != 16:
@@ -198,13 +275,15 @@ def _add_repeated_phrase_ride_accents(
                 hit = ride_hits_by_slot.get(key)
                 if key in varied or hit is None:
                     continue
+                if hit.drum_class == "hihat" and hit.velocity < 0.72:
+                    continue
                 varied[key] = PlacedCandidate(
                     measure_idx=measure_idx,
                     slot_idx=slot_idx,
                     time_sec=hit.time_sec,
                     note_type=TaikoNote.KAT,
                     priority=0.55,
-                    source="drum:ride",
+                    source=f"drum:{hit.drum_class}",
                 )
 
     return varied
@@ -217,7 +296,9 @@ def build_course(
     cfg: AppConfig,
     overrides: SongOverrides | None = None,
     base_slots: list[MeasureSlot] | None = None,
+    rule_difficulty: DifficultyLevel | None = None,
 ) -> ChartDifficulty:
+    effective_rule_diff = rule_difficulty or difficulty
     source_slots = base_slots if base_slots is not None else slots
     warped = _slots_differ(source_slots, slots)
 
@@ -266,7 +347,7 @@ def build_course(
         guitar_events = analysis.guitar_events
         effective_analysis = analysis
 
-    plans = build_measure_plans(slots, effective_analysis, difficulty, cfg, overrides)
+    plans = build_measure_plans(slots, effective_analysis, effective_rule_diff, cfg, overrides)
 
     drum_cands = map_drum_hits(drum_hits, slots, plans, cfg)
     vocal_cands = map_vocal_cadence(vocal_events, drum_hits, slots, plans, cfg)
@@ -274,18 +355,21 @@ def build_course(
     combined = dict(drum_cands)
     combined.update(vocal_cands)
 
+    combined = weave_hybrid_vocal_hooks(combined, vocal_events, slots, plans, cfg)
     fused = apply_guitar_fusion(combined, guitar_events, slots, plans, cfg)
     variation_intensity = 0.0
-    if overrides and difficulty in overrides.difficulty_overrides:
-        variation_intensity = overrides.difficulty_overrides[difficulty].phrase_variation or 0.0
+    if overrides and effective_rule_diff in overrides.difficulty_overrides:
+        variation_intensity = overrides.difficulty_overrides[effective_rule_diff].phrase_variation or 0.0
     fused = _apply_repeated_phrase_color_variation(
         fused,
         drum_cands,
         len(slots),
         variation_intensity,
     )
-    fused = _add_repeated_phrase_ride_accents(fused, drum_cands, drum_hits, slots, difficulty)
-    measures = apply_hori_ergonomics(fused, slots, plans, cfg, difficulty)
+    fused = _add_repeated_phrase_ride_accents(fused, drum_cands, drum_hits, slots, effective_rule_diff)
+    measures, auto_balloons = build_ergonomic_measures_with_balloons(
+        fused, slots, plans, cfg, effective_rule_diff, analysis=effective_analysis
+    )
 
     if overrides and overrides.note_edits:
         prefix = f"{difficulty}:"
@@ -347,14 +431,22 @@ def build_course(
             if resolution % denominator == 0:
                 measures[m_idx].notes[numerator * (resolution // denominator)] = code
 
-    stars = estimate_star_rating(difficulty, measures)
+    stars = estimate_star_rating(effective_rule_diff, measures)
     if overrides and difficulty in overrides.difficulty_overrides:
         ov_star = overrides.difficulty_overrides[difficulty].star_rating
         if ov_star is not None:
             stars = ov_star
 
+    total_balloons = sum(
+        1 for m in measures for n in m.notes if n == TaikoNote.BALLOON.value
+    )
+    while len(auto_balloons) < total_balloons:
+        auto_balloons.append(10)
+    auto_balloons = auto_balloons[:total_balloons]
+
     return ChartDifficulty(
         difficulty=difficulty,
         level_stars=stars,
         measures=measures,
+        balloon_counts=auto_balloons,
     )
