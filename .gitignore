@@ -20,3 +20,14 @@ configs/wizard_settings.json.tmp
 !.env.example
 *.log
 *.tmp
+
+/.tools/
+/.python/
+/.uv-cache/
+/deployment-logs/
+/.taikolab-managed-venv
+/deployment-backups/
+/Integrate-Deployment-Changes.ps1
+/Create-TaikoLab-Deployment.ps1
+/Fix-TaikoLab-Deployment.ps1
+/Fix-CUDA-Index.ps1
