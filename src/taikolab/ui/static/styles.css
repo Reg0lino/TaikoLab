@@ -388,3 +388,15 @@ kbd {
   flex-direction: column;
   gap: 10px;
 }
+.section-mark-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.sec-sources-box {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}

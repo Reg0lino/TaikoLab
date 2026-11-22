@@ -9,7 +9,17 @@ from pydantic import BaseModel, Field, model_validator
 
 DrumClass = Literal["kick", "snare", "hihat", "tom", "crash", "ride", "unknown"]
 DifficultyLevel = Literal["easy", "normal", "hard", "oni", "ura"]
-FollowMode = Literal["auto", "drums", "vocals", "guitar", "hybrid", "chaos_roll"]
+FollowMode = Literal[
+    "auto",
+    "drums",
+    "vocals",
+    "guitar",
+    "hybrid",
+    "drums_vocals",
+    "vocals_guitar",
+    "all_balanced",
+    "chaos_roll",
+]
 TaikoTarget = Literal["don", "kat", "big_don", "big_kat", "ignore"]
 
 
@@ -103,6 +113,15 @@ class TempoAnchor(BaseModel):
     denominator: int = Field(default=4, ge=1, le=32)
 
 
+class SectionDifficultyRule(BaseModel):
+    follow_mode: FollowMode = "auto"
+    drum_sensitivity: float = Field(default=1.0, ge=0.1, le=3.0)
+    vocal_sensitivity: float = Field(default=1.0, ge=0.1, le=3.0)
+    enable_big_notes: bool = True
+    fold_blasts_to_rolls: bool | None = None
+    max_nps: float | None = Field(default=None, gt=0.5, le=30.0)
+
+
 class SectionOverride(BaseModel):
     start_sec: float = Field(ge=0.0)
     end_sec: float = Field(gt=0.0)
@@ -118,6 +137,7 @@ class SectionOverride(BaseModel):
     enable_big_notes: bool = True
     fold_blasts_to_rolls: bool | None = None
     max_nps: float | None = Field(default=None, gt=0.5, le=30.0)
+    difficulty_rules: dict[DifficultyLevel, SectionDifficultyRule] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_time_range(self) -> SectionOverride:
@@ -149,6 +169,12 @@ class ChartControlSettings(BaseModel):
     fill_rolls_by_course: dict[DifficultyLevel, int] = Field(default_factory=dict)
     # Read older saved settings that used one cap for every course.
     fill_rolls_per_course: int | None = Field(default=None, ge=0, le=12)
+    groove_triple_density_by_course: dict[DifficultyLevel, float] = Field(default_factory=dict)
+    groove_triples_by_course: dict[DifficultyLevel, int] = Field(default_factory=dict)
+    groove_triple_complexity_by_course: dict[DifficultyLevel, float] = Field(default_factory=dict)
+    groove_triple_complexity: float | None = Field(default=None, ge=0.0, le=1.0)
+    groove_triple_ramp: float | None = Field(default=None, ge=0.0, le=1.0)
+    groove_triple_max_bpm: float | None = Field(default=None, ge=120.0, le=300.0)
     difficulty_overrides: dict[DifficultyLevel, DifficultyRuleOverride] = Field(
         default_factory=dict
     )
@@ -159,6 +185,21 @@ class ChartControlSettings(BaseModel):
             if not 0 <= cap <= 12:
                 raise ValueError(
                     f"Fill-roll cap for {difficulty} must be between 0 and 12"
+                )
+        for difficulty, count in self.groove_triples_by_course.items():
+            if not 0 <= count <= 60:
+                raise ValueError(
+                    f"Groove-triple amount for {difficulty} must be between 0 and 60"
+                )
+        for difficulty, density in self.groove_triple_density_by_course.items():
+            if not 0.0 <= density <= 1.0:
+                raise ValueError(
+                    f"Groove-triple density for {difficulty} must be between 0.0 and 1.0"
+                )
+        for difficulty, comp in self.groove_triple_complexity_by_course.items():
+            if not 0.0 <= comp <= 1.0:
+                raise ValueError(
+                    f"Groove-triple complexity for {difficulty} must be between 0.0 and 1.0"
                 )
         return self
 

@@ -25,7 +25,7 @@ def apply_guitar_fusion(
             continue
         m_idx, s_idx = loc
         plan = plans[m_idx]
-        if plan.follow_mode not in ("hybrid", "guitar"):
+        if plan.follow_mode not in ("hybrid", "guitar", "vocals_guitar", "all_balanced"):
             continue
         if plan.low_energy_guitar:
             continue
@@ -46,7 +46,7 @@ def apply_guitar_fusion(
 
         bar_drum_count = sum(1 for (bm, _) in merged if bm == m_idx)
         adjacent_busy = any((m_idx, s_idx + delta) in merged for delta in (-1, 1))
-        if plan.follow_mode == "guitar" or (
+        if plan.follow_mode in ("guitar", "vocals_guitar") or (
             bar_drum_count < 6 and not adjacent_busy and ev.strength >= max(cfg.preset.guitar_min_strength, 0.65)
         ):
             note = (

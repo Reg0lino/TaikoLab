@@ -43,7 +43,11 @@ _ACCENT = "#54a6ff"
 _DEFAULT_PRESET = "punk_gallop"
 _DEFAULT_DENSITY_PERCENT = 100.0
 _DEFAULT_PHRASE_VARIATION = {"hard": 0.0, "oni": 0.0}
-_DEFAULT_FILL_ROLLS_BY_COURSE = {"easy": 4, "normal": 4, "hard": 2, "oni": 2}
+_DEFAULT_FILL_ROLLS_BY_COURSE = {"easy": 1, "normal": 4, "hard": 5, "oni": 6}
+_DEFAULT_GROOVE_TRIPLE_DENSITY_BY_COURSE = {"easy": 0.0, "normal": 15.0, "hard": 45.0, "oni": 70.0}
+_DEFAULT_GROOVE_TRIPLE_COMPLEXITY_BY_COURSE = {"normal": 15.0, "hard": 25.0, "oni": 80.0}
+_DEFAULT_GROOVE_TRIPLE_RAMP = 50.0
+_DEFAULT_GROOVE_TRIPLE_MAX_BPM = 235.0
 DEV_CHART_VERSION = "v0.2"
 
 
@@ -221,6 +225,44 @@ class TaikoWizard:
             )
             for difficulty in ("easy", "normal", "hard", "oni")
         }
+        self.groove_triple_densities = {
+            difficulty: tk.DoubleVar(
+                value=(
+                    chart_controls.groove_triple_density_by_course[difficulty] * 100.0
+                    if difficulty in chart_controls.groove_triple_density_by_course
+                    else _DEFAULT_GROOVE_TRIPLE_DENSITY_BY_COURSE[difficulty]
+                )
+            )
+            for difficulty in ("easy", "normal", "hard", "oni")
+        }
+        self.groove_triple_complexities = {
+            difficulty: tk.DoubleVar(
+                value=(
+                    chart_controls.groove_triple_complexity_by_course[difficulty] * 100.0
+                    if difficulty in chart_controls.groove_triple_complexity_by_course
+                    else (
+                        chart_controls.groove_triple_complexity * 100.0
+                        if chart_controls.groove_triple_complexity is not None
+                        else _DEFAULT_GROOVE_TRIPLE_COMPLEXITY_BY_COURSE[difficulty]
+                    )
+                )
+            )
+            for difficulty in ("normal", "hard", "oni")
+        }
+        self.groove_triple_ramp = tk.DoubleVar(
+            value=(
+                chart_controls.groove_triple_ramp * 100.0
+                if chart_controls.groove_triple_ramp is not None
+                else _DEFAULT_GROOVE_TRIPLE_RAMP
+            )
+        )
+        self.groove_triple_max_bpm = tk.DoubleVar(
+            value=(
+                chart_controls.groove_triple_max_bpm
+                if chart_controls.groove_triple_max_bpm is not None
+                else _DEFAULT_GROOVE_TRIPLE_MAX_BPM
+            )
+        )
         self.density_scales = {
             difficulty: tk.DoubleVar(
                 value=(
@@ -538,6 +580,62 @@ class TaikoWizard:
             values=("One downbeat", "Leave empty"),
             state="readonly",
         ).grid(row=22, column=1, sticky="w", pady=(4, 0))
+        self._add_slider(
+            controls,
+            23,
+            "Groove triple max BPM",
+            self.groove_triple_max_bpm,
+            120,
+            300,
+            5,
+            "{:.0f}",
+            default_value=_DEFAULT_GROOVE_TRIPLE_MAX_BPM,
+        )
+        self._add_slider(
+            controls,
+            24,
+            "Groove triple ending ramp",
+            self.groove_triple_ramp,
+            0,
+            100,
+            5,
+            "{:.0f}%",
+            default_value=_DEFAULT_GROOVE_TRIPLE_RAMP,
+        )
+        ttk.Label(
+            controls,
+            text="Groove triple complexity by course (same-color vs alternating)",
+            style="Muted.TLabel",
+        ).grid(row=25, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        for row, difficulty in enumerate(("normal", "hard", "oni"), start=26):
+            self._add_slider(
+                controls,
+                row,
+                f"{difficulty.title()} complexity",
+                self.groove_triple_complexities[difficulty],
+                0,
+                100,
+                5,
+                "{:.0f}%",
+                default_value=_DEFAULT_GROOVE_TRIPLE_COMPLEXITY_BY_COURSE[difficulty],
+            )
+        ttk.Label(
+            controls,
+            text="Groove triple-stroke density (0-100% of sparse repeating beats)",
+            style="Muted.TLabel",
+        ).grid(row=29, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        for row, difficulty in enumerate(("easy", "normal", "hard", "oni"), start=30):
+            self._add_slider(
+                controls,
+                row,
+                difficulty.title(),
+                self.groove_triple_densities[difficulty],
+                0,
+                100,
+                5,
+                "{:.0f}%",
+                default_value=_DEFAULT_GROOVE_TRIPLE_DENSITY_BY_COURSE[difficulty],
+            )
 
         ttk.Label(options, text="Output folder").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=(8, 0))
         ttk.Entry(options, textvariable=self.songs_directory).grid(
@@ -982,6 +1080,32 @@ class TaikoWizard:
                 difficulty: round(self.fill_roll_caps[difficulty].get())
                 for difficulty in ("easy", "normal", "hard", "oni")
             },
+            groove_triple_density_by_course=(
+                {
+                    difficulty: float(self.groove_triple_densities[difficulty].get()) / 100.0
+                    for difficulty in ("easy", "normal", "hard", "oni")
+                }
+                if hasattr(self, "groove_triple_densities")
+                else {}
+            ),
+            groove_triple_complexity_by_course=(
+                {
+                    difficulty: float(self.groove_triple_complexities[difficulty].get()) / 100.0
+                    for difficulty in ("normal", "hard", "oni")
+                }
+                if hasattr(self, "groove_triple_complexities")
+                else {}
+            ),
+            groove_triple_ramp=(
+                float(self.groove_triple_ramp.get()) / 100.0
+                if hasattr(self, "groove_triple_ramp")
+                else None
+            ),
+            groove_triple_max_bpm=(
+                float(self.groove_triple_max_bpm.get())
+                if hasattr(self, "groove_triple_max_bpm")
+                else None
+            ),
             difficulty_overrides=difficulty_overrides,
         )
 

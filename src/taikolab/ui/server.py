@@ -229,6 +229,82 @@ def fill_missed_double_gaps(taps: list[DownbeatMarker]) -> tuple[list[DownbeatMa
     return out, added
 
 
+def auto_split_sections_from_analysis(analysis: SongAnalysis) -> list[SectionOverride]:
+    """Segment song into bar-aligned musical sections using energy, vocals, tempo, and drum activity."""
+    from taikolab.arranger.quantizer import build_measure_slots
+
+    slots = build_measure_slots(analysis)
+    if not slots:
+        return _default_sections_from_analysis(analysis)
+
+    def bar_profile(slot):
+        cores = sum(
+            1 for h in analysis.drum_hits
+            if slot.start_sec <= h.time_sec < slot.end_sec and h.drum_class not in ("hihat", "ride")
+        )
+        vocals = sum(1 for v in analysis.vocal_events if slot.start_sec <= v.time_sec < slot.end_sec)
+        guitars = sum(1 for g in analysis.guitar_events if slot.start_sec <= g.time_sec < slot.end_sec)
+        pts = [
+            max(p.drums_rms, p.vocals_rms, p.guitar_rms)
+            for p in analysis.energy_curve
+            if slot.start_sec <= p.time_sec < slot.end_sec
+        ]
+        energy = (sum(pts) / len(pts)) if pts else (0.7 if cores >= 3 else 0.25)
+        if cores <= 1 and vocals >= 2:
+            tag = "Vocal Break"
+        elif cores <= 1 and guitars >= 2:
+            tag = "Quiet / Guitar"
+        elif cores >= 2 and vocals >= 2:
+            tag = "Drums + Vocals"
+        elif cores >= 2:
+            tag = "Instrumental / Riff"
+        else:
+            tag = "Break"
+        return cores, vocals, guitars, energy, tag
+
+    profiles = [bar_profile(s) for s in slots]
+    boundaries = [0]
+    last_b = 0
+    for i in range(1, len(slots)):
+        prev_c, prev_v, _, prev_e, prev_tag = profiles[i - 1]
+        cur_c, cur_v, _, cur_e, cur_tag = profiles[i]
+        bars_since = i - last_b
+        tempo_jump = abs(slots[i].bpm - slots[i - 1].bpm) >= 8.0 or (
+            slots[i].numerator != slots[i - 1].numerator or slots[i].denominator != slots[i - 1].denominator
+        )
+        intro_drop_in = prev_c <= 1 and cur_c >= 3 and bars_since >= 2
+        phrase_boundary = (i % 4 == 0) and bars_since >= 4
+        energy_shift = abs(cur_e - prev_e) >= 0.22
+        role_shift = (cur_tag != prev_tag)
+        if tempo_jump or intro_drop_in or (phrase_boundary and (energy_shift or role_shift or bars_since >= 16)):
+            boundaries.append(i)
+            last_b = i
+
+    sections: list[SectionOverride] = []
+    for idx, b_start in enumerate(boundaries):
+        b_end = boundaries[idx + 1] if idx + 1 < len(boundaries) else len(slots)
+        if b_end <= b_start:
+            continue
+        seg_start = 0.0 if idx == 0 else round(slots[b_start].start_sec, 3)
+        seg_end = round(analysis.duration_sec, 3) if idx == len(boundaries) - 1 else round(slots[b_end].start_sec, 3)
+        if seg_end <= seg_start:
+            continue
+        tags = [profiles[k][4] for k in range(b_start, b_end)]
+        dom_tag = max(set(tags), key=tags.count)
+        if idx == 0 and sum(profiles[k][0] for k in range(b_start, b_end)) <= (b_end - b_start):
+            dom_tag = "Intro"
+        avg_bpm = sum(slots[k].bpm for k in range(b_start, b_end)) / max(1, b_end - b_start)
+        sections.append(
+            SectionOverride(
+                start_sec=seg_start,
+                end_sec=seg_end,
+                label=f"Part {len(sections) + 1} â€” {dom_tag} ({avg_bpm:.0f} BPM)",
+                follow_mode="auto",
+            )
+        )
+    return sections or _default_sections_from_analysis(analysis)
+
+
 def _default_sections_from_analysis(analysis: SongAnalysis) -> list[SectionOverride]:
     if not analysis.tempo_regions:
         return [SectionOverride(start_sec=0.0, end_sec=analysis.duration_sec, label="Full Song", follow_mode="auto")]
@@ -619,6 +695,16 @@ def create_app() -> FastAPI:
     @app.post("/api/songs/{song_id}/export")
     def export_song_api(song_id: str, overrides: SongOverrides):
         return _build_chart_payload(song_id, overrides=overrides, export_sim=True)
+
+    @app.post("/api/songs/{song_id}/sections/auto-split")
+    def auto_split_sections_api(song_id: str):
+        cfg = load_config()
+        analysis_path = cfg.song_dir(song_id) / "analysis.json"
+        if not analysis_path.exists():
+            raise HTTPException(status_code=404, detail="Song not found")
+        analysis = SongAnalysis.model_validate_json(analysis_path.read_text(encoding="utf-8"))
+        sections = auto_split_sections_from_analysis(analysis)
+        return {"sections": [s.model_dump() for s in sections]}
 
     @app.post("/api/songs/{song_id}/taps/snap")
     def snap_taps_api(song_id: str, req: SnapTapsRequest):

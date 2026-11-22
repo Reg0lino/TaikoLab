@@ -159,17 +159,31 @@ def build_ergonomic_measures_with_balloons(
             )
             if found is not None:
                 start_slot, end_slot, hit_count, span_sec, avg_prio = found
-                roll_end_time = _slot_time(slot, end_slot)
-                clearance_sec = (slot.end_sec - slot.start_sec) / max(1.0, slot.numerator * (8.0 / slot.denominator))
-                next_note_time = next(
-                    (time for time in candidate_times if time > roll_end_time + 1e-6),
+                bar_dur = slot.end_sec - slot.start_sec
+                eighth_sec = bar_dur / max(1.0, slot.numerator * (8.0 / slot.denominator))
+                required_pause = max(0.220, 1.5 * eighth_sec)
+
+                # Compare against notes in later measures so we can trim intra-bar tail notes cleanly for a pause
+                next_bar_time = next(
+                    (
+                        _slot_time(slots[other_m], other_s)
+                        for other_m in range(m_idx + 1, len(slots))
+                        for other_s in sorted(by_measure[other_m])
+                    ),
                     None,
                 )
-                if (
-                    next_note_time is not None
-                    and next_note_time - roll_end_time < clearance_sec - 1e-6
-                ):
-                    continue
+                if next_bar_time is not None:
+                    while (
+                        end_slot > start_slot + 1
+                        and (next_bar_time - _slot_time(slot, end_slot)) < required_pause - 1e-6
+                    ):
+                        end_slot -= 1
+                    span_sec = _slot_time(slot, end_slot) - _slot_time(slot, start_slot)
+                    if span_sec < cfg.hori.min_roll_duration_sec - 1e-6:
+                        continue
+                    if (next_bar_time - _slot_time(slot, end_slot)) < required_pause - 1e-6:
+                        continue
+
                 roll_candidates.append((m_idx, start_slot, end_slot, hit_count, span_sec, avg_prio))
 
     spaced_rolls: list[tuple[int, int, int, int, float, float]] = []
@@ -222,7 +236,8 @@ def build_ergonomic_measures_with_balloons(
             roll_code = TaikoNote.DRUMROLL.value
 
         fill_roll_types[m_idx] = (start_slot, end_slot, roll_code)
-        for s_idx in range(start_slot, end_slot + 1):
+        # Clear fill notes AND any remaining tail slots in this bar so a clean pause precedes the next downbeat
+        for s_idx in range(start_slot, slots[m_idx].grid_size):
             by_measure[m_idx].pop(s_idx, None)
 
     items: list[tuple[float, float, int, int, PlacedCandidate]] = []
@@ -283,8 +298,10 @@ def build_ergonomic_measures_with_balloons(
     for m_idx, slot in enumerate(slots):
         grid = [TaikoNote.REST.value] * slot.grid_size
         if m_idx in roll_measures:
+            bar_dur = max(0.1, slot.end_sec - slot.start_sec)
+            pause_slots = max(2, min(slot.grid_size - 2, int(round(0.22 * slot.grid_size / bar_dur))))
             grid[0] = TaikoNote.DRUMROLL.value
-            end_slot = max(1, slot.grid_size - 2)
+            end_slot = max(1, slot.grid_size - pause_slots)
             grid[end_slot] = TaikoNote.END.value
         else:
             for s_idx, cand in filtered_by_measure[m_idx].items():

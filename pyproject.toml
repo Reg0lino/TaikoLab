@@ -23,6 +23,7 @@ audio = [
 ml = [
     "beat-this",
     "adtof-pytorch @ git+https://github.com/xavriley/ADTOF-pytorch.git",
+    "demucs==4.1.0",
 ]
 ui = [
     "fastapi>=0.115",

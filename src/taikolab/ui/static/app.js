@@ -43,6 +43,8 @@ let state = {
   clipboard: null,
   sourceTjaPath: null,
   activeProjectName: "",
+  markInSec: null,
+  markOutSec: null,
   gridAnchorIdx: null,
   gridPreviewTimes: null,
   gridStatusText: "",
@@ -534,7 +536,9 @@ function updateSelectionUI() {
   updateGridUI();
 }
 
-const DEFAULT_ROLL_CAPS = { easy: 4, normal: 4, hard: 2, oni: 2, ura: 2 };
+const DEFAULT_ROLL_CAPS = { easy: 1, normal: 4, hard: 5, oni: 6, ura: 6 };
+const DEFAULT_GROOVE_TRIPLE_DENSITY = { easy: 0, normal: 15, hard: 45, oni: 70, ura: 75 };
+const DEFAULT_TRIPLE_COMPLEXITY = { easy: 0, normal: 15, hard: 25, oni: 80, ura: 85 };
 
 function populateChartControls() {
   if (!state.data || state.importId) return;
@@ -572,6 +576,31 @@ function populateChartControls() {
   const rollCap = ov.fill_rolls_by_course?.[diff] ?? ov.fill_rolls_per_course ?? DEFAULT_ROLL_CAPS[diff] ?? 0;
   document.getElementById("ctrlCourseRolls").value = String(rollCap);
   document.getElementById("lblCtrlRolls").textContent = String(rollCap);
+
+  const tripleDenRaw = ov.groove_triple_density_by_course?.[diff];
+  const tripleDenPct = tripleDenRaw !== undefined && tripleDenRaw !== null
+    ? Math.round(tripleDenRaw * 100)
+    : (DEFAULT_GROOVE_TRIPLE_DENSITY[diff] ?? 0);
+  document.getElementById("ctrlCourseTriples").value = String(tripleDenPct);
+  document.getElementById("lblCtrlTriples").textContent = `${tripleDenPct}%`;
+
+  const compRaw = ov.groove_triple_complexity_by_course?.[diff] ?? ov.groove_triple_complexity;
+  const compPct = compRaw !== undefined && compRaw !== null
+    ? Math.round(compRaw * 100)
+    : (DEFAULT_TRIPLE_COMPLEXITY[diff] ?? 35);
+  const compInp = document.getElementById("ctrlTripleComp");
+  compInp.value = String(compPct);
+  compInp.disabled = diff === "easy";
+  document.getElementById("btnResetCtrlTripleComp").disabled = compInp.disabled;
+  document.getElementById("lblCtrlTripleComp").textContent = `${compPct}%`;
+
+  const maxBpm = Math.round(ov.groove_triple_max_bpm ?? 235);
+  document.getElementById("ctrlTripleMaxBpm").value = String(maxBpm);
+  document.getElementById("lblCtrlTripleBpm").textContent = String(maxBpm);
+
+  const rampPct = Math.round((ov.groove_triple_ramp ?? 0.50) * 100);
+  document.getElementById("ctrlTripleRamp").value = String(rampPct);
+  document.getElementById("lblCtrlTripleRamp").textContent = `${rampPct}%`;
 }
 
 function applyChartControlsToOverrides() {
@@ -627,6 +656,7 @@ function cloneEditState() {
     disabled_courses: state.data?.overrides?.disabled_courses || [],
     difficulty_overrides: state.data?.overrides?.difficulty_overrides || {},
     fill_rolls_by_course: state.data?.overrides?.fill_rolls_by_course || {},
+    sections: state.data?.overrides?.sections || [],
   }));
 }
 
@@ -652,6 +682,7 @@ function restoreEditState(snapshot) {
   state.data.overrides.disabled_courses = snapshot.disabled_courses || [];
   state.data.overrides.difficulty_overrides = snapshot.difficulty_overrides || {};
   state.data.overrides.fill_rolls_by_course = snapshot.fill_rolls_by_course || {};
+  if (snapshot.sections) state.data.overrides.sections = snapshot.sections;
   document.getElementById("globalOffsetInput").value = state.data.overrides.global_offset_ms;
   clearSelection();
   state.editSeq += 1;
@@ -879,6 +910,14 @@ function renderRegions(force = false) {
   });
 }
 
+function formatSectionBadge(sec) {
+  const custom = sec.difficulty_rules ? Object.entries(sec.difficulty_rules) : [];
+  if (custom.length > 0) {
+    return custom.map(([d, r]) => `${d[0].toUpperCase()}:${r.follow_mode}`).join(" ");
+  }
+  return sec.follow_mode || "auto";
+}
+
 function renderSectionList() {
   const container = document.getElementById("sectionList");
   container.innerHTML = "";
@@ -891,7 +930,7 @@ function renderSectionList() {
         <div><strong>${sec.label || `Part ${idx + 1}`}</strong></div>
         <div class="sec-meta">${fmtTime(sec.start_sec)} &ndash; ${fmtTime(sec.end_sec)}</div>
       </div>
-      <span class="badge">${sec.follow_mode}</span>
+      <span class="badge">${formatSectionBadge(sec)}</span>
     `;
     div.onclick = () => {
       selectSection(idx);
@@ -1091,32 +1130,85 @@ function straightenSelectedSectionBpm() {
   showToast(`Straightened ${matching.length} bars to ${avgBpm} BPM (notes locked)`);
 }
 
+function syncSourceCheckboxesFromFollow(mode) {
+  const d = document.getElementById("secSrcDrums");
+  const v = document.getElementById("secSrcVocals");
+  const g = document.getElementById("secSrcGuitar");
+  const map = {
+    drums: [true, false, false],
+    vocals: [false, true, false],
+    guitar: [false, false, true],
+    drums_vocals: [true, true, false],
+    hybrid: [true, false, true],
+    vocals_guitar: [false, true, true],
+    all_balanced: [true, true, true],
+  };
+  const [bd, bv, bg] = map[mode] || [false, false, false];
+  d.checked = bd;
+  v.checked = bv;
+  g.checked = bg;
+}
+
+function followModeFromSourceCheckboxes() {
+  const bd = document.getElementById("secSrcDrums").checked;
+  const bv = document.getElementById("secSrcVocals").checked;
+  const bg = document.getElementById("secSrcGuitar").checked;
+  if (bd && bv && bg) return "all_balanced";
+  if (bd && bv) return "drums_vocals";
+  if (bd && bg) return "hybrid";
+  if (bv && bg) return "vocals_guitar";
+  if (bd) return "drums";
+  if (bv) return "vocals";
+  if (bg) return "guitar";
+  return "auto";
+}
+
 function populateInspector() {
   const secs = state.data?.overrides?.sections || [];
   const sec = secs[state.selectedSectionIdx];
   if (!sec) return;
+  const diff = document.getElementById("diffSelect").value;
+  const diffRule = sec.difficulty_rules?.[diff] || null;
+  const scopeLbl = document.getElementById("lblSecCourseScope");
+  if (scopeLbl) {
+    scopeLbl.textContent = diffRule ? `${diff.toUpperCase()} CUSTOM` : "ALL / DEFAULT";
+  }
+  const activeRule = diffRule || sec;
+
   document.getElementById("secRangeBadge").textContent = `${fmtTime(sec.start_sec)} - ${fmtTime(sec.end_sec)}`;
   document.getElementById("secLabel").value = sec.label || "";
-  document.getElementById("secFollow").value = sec.follow_mode || "auto";
+  document.getElementById("secFollow").value = activeRule.follow_mode || "auto";
+  syncSourceCheckboxesFromFollow(activeRule.follow_mode || "auto");
   document.getElementById("secShiftMs").value = sec.offset_shift_ms || 0;
   document.getElementById("secBpm").value = sec.bpm || "";
   document.getElementById("secBpmMult").value = String(sec.bpm_multiplier || 1);
   document.getElementById("secMeter").value = sec.numerator && sec.denominator ? `${sec.numerator}/${sec.denominator}` : "auto";
-  document.getElementById("secDrumSens").value = sec.drum_sensitivity || 1.0;
-  document.getElementById("lblDrumSens").textContent = Number(sec.drum_sensitivity || 1.0).toFixed(2);
-  document.getElementById("secVocalSens").value = sec.vocal_sensitivity || 1.0;
-  document.getElementById("lblVocalSens").textContent = Number(sec.vocal_sensitivity || 1.0).toFixed(2);
-  document.getElementById("secMaxNps").value = sec.max_nps || "";
-  document.getElementById("secBigNotes").checked = sec.enable_big_notes !== false;
-  document.getElementById("secFoldRolls").checked = sec.fold_blasts_to_rolls !== false;
+  document.getElementById("secDrumSens").value = activeRule.drum_sensitivity || 1.0;
+  document.getElementById("lblDrumSens").textContent = Number(activeRule.drum_sensitivity || 1.0).toFixed(2);
+  document.getElementById("secVocalSens").value = activeRule.vocal_sensitivity || 1.0;
+  document.getElementById("lblVocalSens").textContent = Number(activeRule.vocal_sensitivity || 1.0).toFixed(2);
+  document.getElementById("secMaxNps").value = activeRule.max_nps || "";
+  document.getElementById("secBigNotes").checked = activeRule.enable_big_notes !== false;
+  document.getElementById("secFoldRolls").checked = activeRule.fold_blasts_to_rolls !== false;
 }
 
-function readInspectorIntoSelected() {
+function buildSectionRuleFromInspector() {
+  const maxNpsStr = document.getElementById("secMaxNps").value.trim();
+  return {
+    follow_mode: document.getElementById("secFollow").value,
+    drum_sensitivity: parseFloat(document.getElementById("secDrumSens").value || "1"),
+    vocal_sensitivity: parseFloat(document.getElementById("secVocalSens").value || "1"),
+    max_nps: maxNpsStr ? parseFloat(maxNpsStr) : null,
+    enable_big_notes: document.getElementById("secBigNotes").checked,
+    fold_blasts_to_rolls: document.getElementById("secFoldRolls").checked,
+  };
+}
+
+function readInspectorIntoSelected(targetDifficulties = null) {
   const secs = state.data?.overrides?.sections || [];
   const sec = secs[state.selectedSectionIdx];
   if (!sec) return;
   sec.label = document.getElementById("secLabel").value;
-  sec.follow_mode = document.getElementById("secFollow").value;
   sec.offset_shift_ms = parseFloat(document.getElementById("secShiftMs").value || "0");
   const bpmStr = document.getElementById("secBpm").value.trim();
   sec.bpm = bpmStr ? Math.max(30, Math.min(380, parseFloat(bpmStr))) : null;
@@ -1130,12 +1222,26 @@ function readInspectorIntoSelected() {
     sec.numerator = n;
     sec.denominator = d;
   }
-  sec.drum_sensitivity = parseFloat(document.getElementById("secDrumSens").value || "1");
-  sec.vocal_sensitivity = parseFloat(document.getElementById("secVocalSens").value || "1");
-  const maxNpsStr = document.getElementById("secMaxNps").value.trim();
-  sec.max_nps = maxNpsStr ? parseFloat(maxNpsStr) : null;
-  sec.enable_big_notes = document.getElementById("secBigNotes").checked;
-  sec.fold_blasts_to_rolls = document.getElementById("secFoldRolls").checked;
+
+  const rule = buildSectionRuleFromInspector();
+  if (Array.isArray(targetDifficulties) && targetDifficulties.length > 0) {
+    if (!sec.difficulty_rules) sec.difficulty_rules = {};
+    for (const d of targetDifficulties) {
+      if (rule.follow_mode === "auto" && rule.drum_sensitivity === 1 && rule.vocal_sensitivity === 1 && !rule.max_nps && rule.enable_big_notes) {
+        delete sec.difficulty_rules[d];
+      } else {
+        sec.difficulty_rules[d] = { ...rule };
+      }
+    }
+    return;
+  }
+
+  sec.follow_mode = rule.follow_mode;
+  sec.drum_sensitivity = rule.drum_sensitivity;
+  sec.vocal_sensitivity = rule.vocal_sensitivity;
+  sec.max_nps = rule.max_nps;
+  sec.enable_big_notes = rule.enable_big_notes;
+  sec.fold_blasts_to_rolls = rule.fold_blasts_to_rolls;
 }
 
 const COURSE_LABELS = {
@@ -3052,6 +3158,22 @@ bindSliderPair(
   () => DEFAULT_ROLL_CAPS[document.getElementById("diffSelect").value] ?? 0,
   "btnResetCtrlRolls"
 );
+bindSliderPair(
+  "ctrlCourseTriples",
+  "lblCtrlTriples",
+  (v) => `${Math.round(v)}%`,
+  () => DEFAULT_GROOVE_TRIPLE_DENSITY[document.getElementById("diffSelect").value] ?? 0,
+  "btnResetCtrlTriples"
+);
+bindSliderPair(
+  "ctrlTripleComp",
+  "lblCtrlTripleComp",
+  (v) => `${Math.round(v)}%`,
+  () => DEFAULT_TRIPLE_COMPLEXITY[document.getElementById("diffSelect").value] ?? 35,
+  "btnResetCtrlTripleComp"
+);
+bindSliderPair("ctrlTripleMaxBpm", "lblCtrlTripleBpm", (v) => String(Math.round(v)), 235, "btnResetCtrlTripleBpm");
+bindSliderPair("ctrlTripleRamp", "lblCtrlTripleRamp", (v) => `${Math.round(v)}%`, 50, "btnResetCtrlTripleRamp");
 
 ["ctrlQuietBehavior", "ctrlCourseFollow"].forEach((id) => {
   document.getElementById(id).addEventListener("change", () => {
@@ -3098,6 +3220,7 @@ document.getElementById("diffSelect").addEventListener("change", () => {
   clearSelection();
   renderDiagnostics();
   populateChartControls();
+  populateInspector();
 });
 document.getElementById("speedSelect").addEventListener("change", (e) => {
   if (wavesurfer) wavesurfer.setPlaybackRate(parseFloat(e.target.value));
@@ -3244,6 +3367,10 @@ window.addEventListener("keydown", (e) => {
     setEditorTool("7");
   } else if (e.code === "KeyE") {
     setEditorTool("erase");
+  } else if (e.code === "KeyI" && !state.importId) {
+    markSectionBoundary("in");
+  } else if (e.code === "KeyO" && !state.importId) {
+    markSectionBoundary("out");
   }
 }, { capture: true });
 
@@ -3288,9 +3415,80 @@ document.getElementById("btnSeedTaps").addEventListener("click", () => {
 });
 
 // Auto-rebuild immediately when Section Inspector dropdowns/checkboxes change
-["secFollow", "secBpmMult", "secMeter", "secBigNotes", "secFoldRolls"].forEach((id) => {
+function updateMarkRangeUI() {
+  const lbl = document.getElementById("lblMarkRange");
+  const btn = document.getElementById("btnCreateMarkedSection");
+  if (!lbl || !btn) return;
+  const inTxt = state.markInSec !== null ? fmtTime(state.markInSec) : "--:--";
+  const outTxt = state.markOutSec !== null ? fmtTime(state.markOutSec) : "--:--";
+  lbl.textContent = `${inTxt} / ${outTxt}`;
+  btn.disabled = !(state.markInSec !== null && state.markOutSec !== null && Math.abs(state.markOutSec - state.markInSec) >= 0.25);
+}
+
+function markSectionBoundary(which) {
+  if (!state.data) return;
+  const offsetDelta = state.importId ? 0.0 : (state.data.overrides.global_offset_ms || 0) / 1000.0;
+  const rawT = Math.max(0, getCurrentTimeSec() - offsetDelta);
+  const dur = getChartDuration();
+  const snapped = Number(snapTimeToBarline(rawT, 0.0, dur || rawT + 10).toFixed(3));
+  if (which === "in") {
+    state.markInSec = snapped;
+    showToast(`Marked section IN at ${fmtTime(snapped)}`);
+  } else {
+    state.markOutSec = snapped;
+    showToast(`Marked section OUT at ${fmtTime(snapped)}`);
+  }
+  updateMarkRangeUI();
+}
+
+document.getElementById("btnMarkIn").addEventListener("click", () => markSectionBoundary("in"));
+document.getElementById("btnMarkOut").addEventListener("click", () => markSectionBoundary("out"));
+document.getElementById("btnCreateMarkedSection").addEventListener("click", () => {
+  if (state.markInSec === null || state.markOutSec === null) return;
+  const s = Math.min(state.markInSec, state.markOutSec);
+  const e = Math.max(state.markInSec, state.markOutSec);
+  saveUndoPoint();
+  if (carveSectionRange(s, e)) {
+    state.markInSec = null;
+    state.markOutSec = null;
+    updateMarkRangeUI();
+    showToast(`Created section ${fmtTime(s)} - ${fmtTime(e)}`);
+  }
+});
+
+document.getElementById("btnAutoSplitSections").addEventListener("click", async () => {
+  if (!state.data || state.importId) return;
+  const res = await fetch(`/api/songs/${state.songId}/sections/auto-split`, { method: "POST" });
+  if (!res.ok) {
+    showToast("Could not auto-split sections.");
+    return;
+  }
+  const { sections } = await res.json();
+  if (!sections || !sections.length) return;
+  saveUndoPoint();
+  state.data.overrides.sections = sections;
+  state.selectedSectionIdx = 0;
+  renderSectionList();
+  populateInspector();
+  renderRegions(true);
+  state.editSeq += 1;
+  rebuildChart(false);
+  showToast(`Detected ${sections.length} musical sections`);
+});
+
+["secSrcDrums", "secSrcVocals", "secSrcGuitar"].forEach((id) => {
   document.getElementById(id).addEventListener("change", () => {
-    readInspectorIntoSelected();
+    document.getElementById("secFollow").value = followModeFromSourceCheckboxes();
+  });
+});
+
+document.getElementById("secFollow").addEventListener("change", (e) => {
+  syncSourceCheckboxesFromFollow(e.target.value);
+});
+
+["secBpmMult", "secMeter"].forEach((id) => {
+  document.getElementById(id).addEventListener("change", () => {
+    readInspectorIntoSelected(null);
     if (id === "secMeter" && state.data?.overrides?.custom_downbeats?.length) {
       const sec = state.data.overrides.sections[state.selectedSectionIdx];
       if (sec) {
@@ -3302,7 +3500,6 @@ document.getElementById("btnSeedTaps").addEventListener("click", () => {
         });
       }
     }
-    state.data.overrides.barline_times = [];
     state.editSeq += 1;
     rebuildChart(false);
   });
@@ -3432,10 +3629,47 @@ document.getElementById("secVocalSens").addEventListener("input", (e) => {
 });
 
 document.getElementById("btnApplySection").addEventListener("click", () => {
-  readInspectorIntoSelected();
+  const secs = state.data?.overrides?.sections || [];
+  const sec = secs[state.selectedSectionIdx];
+  if (!sec) return;
+  const activeDiff = document.getElementById("diffSelect").value;
+  const mode = document.getElementById("secFollow").value;
+  document.getElementById("lblSectionApplySummary").textContent =
+    `Apply "${sec.label || `Part ${state.selectedSectionIdx + 1}`}" (${mode}) within each selected difficulty's NPS & ergonomics limits:`;
+  document.querySelectorAll(".sec-diff-chk").forEach((chk) => {
+    chk.checked = chk.value === activeDiff;
+  });
+  document.getElementById("sectionApplyModal").classList.remove("hidden");
+});
+
+document.getElementById("btnCloseSectionApplyModal").addEventListener("click", () => {
+  document.getElementById("sectionApplyModal").classList.add("hidden");
+});
+document.getElementById("btnSecDiffCurrent").addEventListener("click", () => {
+  const activeDiff = document.getElementById("diffSelect").value;
+  document.querySelectorAll(".sec-diff-chk").forEach((chk) => {
+    chk.checked = chk.value === activeDiff;
+  });
+});
+document.getElementById("btnSecDiffAll").addEventListener("click", () => {
+  document.querySelectorAll(".sec-diff-chk").forEach((chk) => {
+    chk.checked = true;
+  });
+});
+document.getElementById("btnConfirmApplySection").addEventListener("click", () => {
+  const chosen = [...document.querySelectorAll(".sec-diff-chk")]
+    .filter((chk) => chk.checked)
+    .map((chk) => chk.value);
+  if (!chosen.length) {
+    showToast("Select at least one difficulty.");
+    return;
+  }
+  saveUndoPoint();
+  readInspectorIntoSelected(chosen);
+  document.getElementById("sectionApplyModal").classList.add("hidden");
   state.editSeq += 1;
   rebuildChart(false);
-  showToast("Section rebuilt!");
+  showToast(`Applied section to ${chosen.join(", ")}`);
 });
 
 document.getElementById("btnSplitHere").addEventListener("click", splitSectionAtPlayhead);

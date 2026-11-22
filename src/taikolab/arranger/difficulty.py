@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from math import lcm
 
+from taikolab.arranger.groove_triples import apply_groove_triples
 from taikolab.arranger.hori_filter import build_ergonomic_measures_with_balloons
 from taikolab.arranger.mapper_drums import PlacedCandidate, map_drum_hits
 from taikolab.arranger.mapper_fusion import apply_guitar_fusion
@@ -370,6 +371,7 @@ def build_course(
     measures, auto_balloons = build_ergonomic_measures_with_balloons(
         fused, slots, plans, cfg, effective_rule_diff, analysis=effective_analysis
     )
+    measures = apply_groove_triples(measures, drum_cands, plans, effective_rule_diff)
 
     if overrides and overrides.note_edits:
         prefix = f"{difficulty}:"

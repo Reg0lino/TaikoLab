@@ -1048,3 +1048,285 @@ def test_halftime_72bpm_uses_32_slots_so_144bpm_16ths_do_not_collide():
     assert len(hard.measures[0].notes) == 32
     assert hard.measures[0].notes[0] == TaikoNote.DON.value
     assert hard.measures[0].notes[1] == TaikoNote.KAT.value
+def _make_sparse_punk_beat(bars: int = 8, bpm: float = 215.0) -> SongAnalysis:
+    bar_dur = 240.0 / bpm
+    beats = []
+    drums = []
+    for m_idx in range(bars):
+        start = m_idx * bar_dur
+        for b in range(4):
+            beats.append(BeatEvent(time_sec=start + b * (bar_dur / 4.0), is_downbeat=(b == 0)))
+        # Sparse rock/punk pocket: Don(0), Don(2), Ka(4), ..., Ka(12)
+        drums.append(DrumHit(time_sec=start + 0.0, drum_class="kick", velocity=0.85))
+        drums.append(DrumHit(time_sec=start + bar_dur * (2.0 / 16.0), drum_class="kick", velocity=0.85))
+        drums.append(DrumHit(time_sec=start + bar_dur * (4.0 / 16.0), drum_class="snare", velocity=0.85))
+        drums.append(DrumHit(time_sec=start + bar_dur * (12.0 / 16.0), drum_class="snare", velocity=0.85))
+    return SongAnalysis(
+        song_id="sparse_punk",
+        title="Sparse Punk",
+        audio_path="audio.wav",
+        duration_sec=bars * bar_dur,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=bars * bar_dur, bpm=bpm, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+
+
+def test_groove_triples_embellish_sparse_repeating_punk_beat_and_skip_easy():
+    cfg = load_config("punk_gallop")
+    analysis = _make_sparse_punk_beat(bars=12, bpm=215.0)
+    chart = arrange_song(analysis, cfg)
+    by_diff = {c.difficulty: c for c in chart.courses}
+
+    # Easy never gets groove triples (stays at <= 4 notes/bar)
+    assert all(sum(n != 0 for n in m.notes) <= 4 for m in by_diff["easy"].measures)
+
+    # Hard & Oni inject 16th-note triples with a breathing space into alternating bars
+    hard_triple_bars = [m for m in by_diff["hard"].measures if sum(n != 0 for n in m.notes) >= 5]
+    oni_triple_bars = [m for m in by_diff["oni"].measures if sum(n != 0 for n in m.notes) >= 5]
+    assert len(hard_triple_bars) >= 3
+    assert len(oni_triple_bars) >= 3
+
+
+def test_groove_triples_skip_dense_fast_skate_punk_gallop():
+    cfg = load_config("punk_gallop")
+    bpm = 205.0
+    bar_dur = 240.0 / bpm
+    beats = []
+    drums = []
+    gallop_slots = ((0, "kick"), (2, "snare"), (4, "kick"), (5, "kick"), (6, "snare"), (8, "kick"), (10, "snare"), (12, "kick"), (13, "kick"), (14, "snare"))
+    for m_idx in range(8):
+        start = m_idx * bar_dur
+        for b in range(4):
+            beats.append(BeatEvent(time_sec=start + b * (bar_dur / 4.0), is_downbeat=(b == 0)))
+        for s_idx, cls in gallop_slots:
+            drums.append(DrumHit(time_sec=start + bar_dur * (s_idx / 16.0), drum_class=cls, velocity=0.85))
+    analysis = SongAnalysis(
+        song_id="nofx_gallop",
+        title="NOFX Gallop",
+        audio_path="audio.wav",
+        duration_sec=8 * bar_dur,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=8 * bar_dur, bpm=bpm, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    chart_on = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(song_id="nofx_gallop", groove_triples_by_course={"oni": 30}),
+    )
+    chart_off = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(song_id="nofx_gallop", groove_triples_by_course={"oni": 0}),
+    )
+    oni_on = next(c for c in chart_on.courses if c.difficulty == "oni")
+    oni_off = next(c for c in chart_off.courses if c.difficulty == "oni")
+    assert [m.notes for m in oni_on.measures] == [m.notes for m in oni_off.measures]
+
+
+def test_groove_triple_complexity_slider_controls_same_color_vs_alternating():
+    cfg = load_config("punk_gallop")
+    analysis = _make_sparse_punk_beat(bars=10, bpm=160.0)
+    low = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sparse_punk",
+            groove_triples_by_course={"oni": 10},
+            groove_triple_complexity=0.0,
+        ),
+    )
+    high = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sparse_punk",
+            groove_triples_by_course={"oni": 10},
+            groove_triple_complexity=1.0,
+        ),
+    )
+    low_oni = next(c for c in low.courses if c.difficulty == "oni")
+    high_oni = next(c for c in high.courses if c.difficulty == "oni")
+    assert [m.notes for m in low_oni.measures] != [m.notes for m in high_oni.measures]
+def test_groove_triples_handle_pickup_shifted_2_4_6_14_beat_and_max_bpm_slider():
+    cfg = load_config("punk_gallop")
+    bpm = 215.0
+    bar_dur = 240.0 / bpm
+    beats = []
+    drums = []
+    for m_idx in range(8):
+        start = m_idx * bar_dur
+        for b in range(4):
+            beats.append(BeatEvent(time_sec=start + b * (bar_dur / 4.0), is_downbeat=(b == 0)))
+        for s_idx, cls in ((2, "kick"), (4, "kick"), (6, "snare"), (14, "snare")):
+            drums.append(DrumHit(time_sec=start + bar_dur * (s_idx / 16.0), drum_class=cls, velocity=0.85))
+    analysis = SongAnalysis(
+        song_id="aliens_style",
+        title="Aliens Style",
+        audio_path="audio.wav",
+        duration_sec=8 * bar_dur,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=8 * bar_dur, bpm=bpm, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    default_chart = arrange_song(analysis, cfg)
+    hard = next(c for c in default_chart.courses if c.difficulty == "hard")
+    normal = next(c for c in default_chart.courses if c.difficulty == "normal")
+    assert any(sum(n != 0 for n in m.notes) >= 5 for m in hard.measures)
+    assert any(sum(n != 0 for n in m.notes) >= 5 for m in normal.measures)
+
+    capped = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(song_id="aliens_style", groove_triple_max_bpm=190.0),
+    )
+    capped_hard = next(c for c in capped.courses if c.difficulty == "hard")
+    assert all(sum(n != 0 for n in m.notes) == 4 for m in capped_hard.measures)
+def test_groove_triple_ending_ramp_weights_triples_toward_end_of_song():
+    cfg = load_config("punk_gallop")
+    analysis = _make_sparse_punk_beat(bars=24, bpm=180.0)
+    ramped = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sparse_punk",
+            groove_triples_by_course={"hard": 6},
+            groove_triple_ramp=1.0,
+        ),
+    )
+    hard = next(c for c in ramped.courses if c.difficulty == "hard")
+    triple_bars = [m.measure_idx for m in hard.measures if sum(n != 0 for n in m.notes) >= 5]
+    assert len(triple_bars) == 6
+    assert sum(idx >= 12 for idx in triple_bars) > sum(idx < 12 for idx in triple_bars)
+
+
+def test_decoupled_hard_vs_oni_complexity_and_roll_exit_pause():
+    cfg = load_config("punk_gallop")
+    analysis = _make_sparse_punk_beat(bars=12, bpm=170.0)
+    chart = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sparse_punk",
+            groove_triples_by_course={"hard": 6, "oni": 6},
+            groove_triple_complexity_by_course={"hard": 0.1, "oni": 0.9},
+        ),
+    )
+    hard = next(c for c in chart.courses if c.difficulty == "hard")
+    oni = next(c for c in chart.courses if c.difficulty == "oni")
+    assert [m.notes for m in hard.measures] != [m.notes for m in oni.measures]
+
+    fill_chart = arrange_song(
+        _make_sparse_fill_analysis(),
+        cfg,
+        overrides=SongOverrides(
+            song_id="sparse_fills",
+            fill_rolls_by_course={"easy": 1, "normal": 1, "hard": 1, "oni": 1},
+        ),
+    )
+    hard_fill = next(c for c in fill_chart.courses if c.difficulty == "hard")
+    roll_m = next(m for m in hard_fill.measures if TaikoNote.DRUMROLL.value in m.notes)
+    end_slot = roll_m.notes.index(TaikoNote.END.value)
+    end_t = roll_m.start_sec + (end_slot / len(roll_m.notes)) * (roll_m.end_sec - roll_m.start_sec)
+    next_m = hard_fill.measures[roll_m.measure_idx + 1]
+    assert next_m.start_sec - end_t >= 0.22 - 1e-6
+    assert all(n == 0 for n in roll_m.notes[end_slot + 1 :])
+def test_groove_triple_density_slider_scales_with_song_length_and_follows_ramp():
+    cfg = load_config("punk_gallop")
+    analysis = _make_sparse_punk_beat(bars=24, bpm=180.0)
+
+    off = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sparse_punk",
+            groove_triple_density_by_course={"hard": 0.0},
+        ),
+    )
+    mid = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sparse_punk",
+            groove_triple_density_by_course={"hard": 0.30},
+            groove_triple_ramp=1.0,
+        ),
+    )
+    full = arrange_song(
+        analysis,
+        cfg,
+        overrides=SongOverrides(
+            song_id="sparse_punk",
+            groove_triple_density_by_course={"hard": 1.0},
+        ),
+    )
+
+    hard_off = [m for m in next(c for c in off.courses if c.difficulty == "hard").measures if sum(n != 0 for n in m.notes) >= 5]
+    hard_mid = [m.measure_idx for m in next(c for c in mid.courses if c.difficulty == "hard").measures if sum(n != 0 for n in m.notes) >= 5]
+    hard_full = [m for m in next(c for c in full.courses if c.difficulty == "hard").measures if sum(n != 0 for n in m.notes) >= 5]
+
+    assert len(hard_off) == 0
+    assert 4 <= len(hard_mid) < len(hard_full)
+    assert sum(idx >= 12 for idx in hard_mid) > sum(idx < 12 for idx in hard_mid)
+    assert len(hard_full) == 23
+def test_quiet_timekeeping_hihat_intro_plays_on_normal_hard_oni_and_stays_minimal_on_easy():
+    cfg = load_config("punk_gallop")
+    bar_dur = 240.0 / 140.0
+    beats = [BeatEvent(time_sec=i * (bar_dur / 4), is_downbeat=(i % 4 == 0)) for i in range(8)]
+    drums = [
+        DrumHit(time_sec=i * (bar_dur / 8), drum_class="hihat", velocity=0.65, pitch=42)
+        for i in range(16)
+    ]
+    analysis = SongAnalysis(
+        song_id="quiet_hihat",
+        title="Quiet HiHat",
+        audio_path="audio.wav",
+        duration_sec=2 * bar_dur,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=2 * bar_dur, bpm=140.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    chart = arrange_song(analysis, cfg)
+    by_diff = {c.difficulty: c for c in chart.courses}
+
+    assert sum(n != 0 for m in by_diff["easy"].measures for n in m.notes) == 0
+    assert sum(n == TaikoNote.KAT.value for m in by_diff["normal"].measures for n in m.notes) == 8
+    assert sum(n == TaikoNote.KAT.value for m in by_diff["hard"].measures for n in m.notes) >= 12
+    assert sum(n == TaikoNote.KAT.value for m in by_diff["oni"].measures for n in m.notes) >= 12
+
+
+def test_isolated_solo_open_hat_and_ride_rescued_without_cluttering_busy_beats():
+    cfg = load_config("punk_gallop")
+    bar_dur = 1.6  # 150 BPM -> 0.10s per 16th slot
+    beats = [BeatEvent(time_sec=i * 0.4, is_downbeat=(i % 4 == 0)) for i in range(8)]
+    drums = [
+        # Bar 0: busy 8th-note groove + closed hi-hat chatter (should stay ignored)
+        DrumHit(time_sec=0.0, drum_class="kick", velocity=0.9),
+        DrumHit(time_sec=0.1, drum_class="hihat", velocity=0.6, pitch=42),
+        DrumHit(time_sec=0.2, drum_class="snare", velocity=0.9),
+        DrumHit(time_sec=0.4, drum_class="kick", velocity=0.9),
+        DrumHit(time_sec=0.6, drum_class="snare", velocity=0.9),
+        # Bar 1: sparse beat + solo ride at slot 10 (1.0s) and solo open hi-hat at slot 14 (1.4s)
+        DrumHit(time_sec=1.6, drum_class="kick", velocity=0.9),
+        DrumHit(time_sec=2.0, drum_class="snare", velocity=0.9),
+        DrumHit(time_sec=2.6, drum_class="ride", velocity=0.72, pitch=51),
+        DrumHit(time_sec=3.0, drum_class="hihat", velocity=0.72, pitch=46),
+    ]
+    analysis = SongAnalysis(
+        song_id="solo_cymbals",
+        title="Solo Cymbals",
+        audio_path="audio.wav",
+        duration_sec=2 * bar_dur,
+        beats=beats,
+        tempo_regions=[TempoRegion(start_sec=0.0, end_sec=2 * bar_dur, bpm=150.0, numerator=4, denominator=4)],
+        drum_hits=drums,
+    )
+    chart = arrange_song(analysis, cfg)
+    hard = next(c for c in chart.courses if c.difficulty == "hard")
+
+    # Closed chatter at slot 1 of bar 0 stays ignored
+    assert hard.measures[0].notes[1] == TaikoNote.REST.value
+    # Isolated solo ride (slot 10) and open hi-hat (slot 14) in bar 1 are rescued as KAT
+    assert hard.measures[1].notes[10] == TaikoNote.KAT.value
+    assert hard.measures[1].notes[14] == TaikoNote.KAT.value

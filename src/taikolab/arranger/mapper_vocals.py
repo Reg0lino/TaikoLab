@@ -28,7 +28,7 @@ def map_vocal_cadence(
             continue
         m_idx, s_idx = loc
         plan = plans[m_idx]
-        if plan.follow_mode != "vocals":
+        if plan.follow_mode not in ("vocals", "vocals_guitar"):
             continue
         if plan.low_energy_guitar:
             continue
@@ -100,22 +100,26 @@ def weave_hybrid_vocal_hooks(
             continue
         m_idx, s_idx = loc
         plan = plans[m_idx]
-        if plan.follow_mode != "hybrid" or plan.low_energy_guitar:
+        if plan.follow_mode not in ("hybrid", "drums_vocals", "all_balanced") or plan.low_energy_guitar:
             continue
 
+        explicit_vocals = plan.follow_mode in ("drums_vocals", "all_balanced")
         eff_str = min(1.0, ev.strength * plan.vocal_sensitivity)
-        if eff_str < max(0.68, cfg.preset.vocal_min_strength + 0.25):
+        min_str = max(0.42, cfg.preset.vocal_min_strength) if explicit_vocals else max(0.68, cfg.preset.vocal_min_strength + 0.25)
+        if eff_str < min_str:
             continue
 
         key = (m_idx, s_idx)
         if key in merged:
             continue
 
-        if any(abs(dt - ev.time_sec) < 0.18 for dt in drum_times):
+        clearance = 0.13 if explicit_vocals else 0.18
+        if any(abs(dt - ev.time_sec) < clearance for dt in drum_times):
             continue
 
         bar_hits = sum(1 for (bm, _) in merged if bm == m_idx)
-        if bar_hits >= 5:
+        max_bar = 8 if explicit_vocals else 5
+        if bar_hits >= max_bar:
             continue
 
         merged[key] = PlacedCandidate(
