@@ -197,6 +197,7 @@ class ChartControlSettings(BaseModel):
     enable_big_notes: bool | None = None
     fold_blasts_to_rolls: bool | None = None
     ride_cymbal_mode: Literal["accents_and_solo", "full_kat", "ignore"] | None = None
+    cymbal_sensitivity: float | None = Field(default=None, ge=0.0, le=2.0)
     vocal_min_strength: float | None = Field(default=None, ge=0.1, le=0.95)
     guitar_min_strength: float | None = Field(default=None, ge=0.1, le=0.95)
     difficulty_overrides: dict[DifficultyLevel, DifficultyRuleOverride] = Field(

@@ -298,6 +298,13 @@ class TaikoWizard:
         self.guitar_min_strength = tk.DoubleVar(
             value=chart_controls.guitar_min_strength if chart_controls.guitar_min_strength is not None else 0.58
         )
+        self.cymbal_sensitivity = tk.DoubleVar(
+            value=(
+                chart_controls.cymbal_sensitivity * 100.0
+                if chart_controls.cymbal_sensitivity is not None
+                else 100.0
+            )
+        )
         self.saved_profiles = dict(preferences.get("slider_profiles") or {}) if isinstance(preferences.get("slider_profiles"), dict) else {}
         self.selected_slider_profile = tk.StringVar()
         self.density_scales = {
@@ -450,11 +457,14 @@ class TaikoWizard:
             del event
             canvas.configure(scrollregion=canvas.bbox("all"))
 
+        def on_canvas_configure(event: tk.Event) -> None:
+            max_w = min(1040, max(760, event.width - 32))
+            offset_x = max(0, (event.width - max_w) // 2)
+            canvas.coords(canvas_window, offset_x, 0)
+            canvas.itemconfigure(canvas_window, width=max_w)
+
         outer.bind("<Configure>", update_scroll_region)
-        canvas.bind(
-            "<Configure>",
-            lambda event: canvas.itemconfigure(canvas_window, width=event.width),
-        )
+        canvas.bind("<Configure>", on_canvas_configure)
         canvas.bind_all(
             "<MouseWheel>",
             lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"),
@@ -769,7 +779,18 @@ class TaikoWizard:
             "{:.2f}",
             default_value=0.58,
         )
-        ttk.Label(controls, text="Ride cymbal mode").grid(row=37, column=0, sticky="w", padx=(0, 10), pady=(4, 0))
+        self._add_slider(
+            controls,
+            37,
+            "Cymbal inclusion / sensitivity",
+            self.cymbal_sensitivity,
+            0,
+            150,
+            5,
+            "{:.0f}%",
+            default_value=100.0,
+        )
+        ttk.Label(controls, text="Ride cymbal mode").grid(row=38, column=0, sticky="w", padx=(0, 10), pady=(4, 0))
         ttk.Combobox(
             controls,
             textvariable=self.ride_cymbal_mode,
@@ -777,12 +798,12 @@ class TaikoWizard:
             state="readonly",
         ).grid(row=37, column=1, sticky="w", pady=(4, 0))
         toggles_row = ttk.Frame(controls, style="Surface.TFrame")
-        toggles_row.grid(row=38, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        toggles_row.grid(row=39, column=0, columnspan=4, sticky="w", pady=(6, 0))
         ttk.Checkbutton(toggles_row, text="Enable Big Notes (3/4)", variable=self.enable_big_notes).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(toggles_row, text="Fold blast beats into drumrolls (off = keep fast notes)", variable=self.fold_blasts_to_rolls).pack(side="left")
 
         prof_row = ttk.Frame(controls, style="Surface.TFrame")
-        prof_row.grid(row=39, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        prof_row.grid(row=40, column=0, columnspan=4, sticky="ew", pady=(10, 0))
         ttk.Label(prof_row, text="Saved Slider Profile").pack(side="left", padx=(0, 8))
         self.slider_profile_box = ttk.Combobox(
             prof_row,
@@ -880,13 +901,15 @@ class TaikoWizard:
             orient="horizontal",
             variable=variable,
             showvalue=False,
-            background=_SURFACE,
+            background="#334255",
             foreground=_FOREGROUND,
-            troughcolor=_FIELD,
-            activebackground=_ACCENT,
-            highlightthickness=0,
-            borderwidth=0,
-            sliderrelief="flat",
+            troughcolor="#1e2735",
+            activebackground="#54a6ff",
+            highlightthickness=1,
+            highlightbackground="#3d4f66",
+            highlightcolor="#54a6ff",
+            borderwidth=1,
+            sliderrelief="raised",
         )
         scale.grid(row=row, column=1, sticky="ew", padx=(0, 8))
         value_label = ttk.Label(parent, style="Muted.TLabel", width=8, anchor="e")
@@ -1252,6 +1275,7 @@ class TaikoWizard:
             self.ride_cymbal_mode.set(self._ride_mode_labels.get(c.ride_cymbal_mode, "Solo & Phrase Accents"))
         if c.vocal_min_strength is not None: self.vocal_min_strength.set(c.vocal_min_strength)
         if c.guitar_min_strength is not None: self.guitar_min_strength.set(c.guitar_min_strength)
+        if c.cymbal_sensitivity is not None: self.cymbal_sensitivity.set(c.cymbal_sensitivity * 100.0)
         if c.groove_triple_max_bpm is not None: self.groove_triple_max_bpm.set(c.groove_triple_max_bpm)
         if c.groove_triple_ramp is not None: self.groove_triple_ramp.set(c.groove_triple_ramp * 100.0)
         for d, cap in c.fill_rolls_by_course.items():
@@ -1355,6 +1379,7 @@ class TaikoWizard:
             ),
             vocal_min_strength=(float(self.vocal_min_strength.get()) if hasattr(self, "vocal_min_strength") else 0.36),
             guitar_min_strength=(float(self.guitar_min_strength.get()) if hasattr(self, "guitar_min_strength") else 0.58),
+            cymbal_sensitivity=(float(self.cymbal_sensitivity.get()) / 100.0 if hasattr(self, "cymbal_sensitivity") else 1.0),
             difficulty_overrides=difficulty_overrides,
         )
 

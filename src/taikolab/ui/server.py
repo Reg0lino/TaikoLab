@@ -260,7 +260,28 @@ def _default_sections_from_analysis(analysis: SongAnalysis) -> list[SectionOverr
     return merged
 
 
-def _validate_manual_rolls(chart) -> None:
+def _auto_heal_chart_rolls_and_balloons(chart, overrides: SongOverrides | None = None) -> None:
+    """Cleanly resolve overlapping notes, unclosed rolls, and mismatched balloon counts."""
+    from taikolab.exporters.tja_writer import _sanitize_measures_rolls
+
+    for course in chart.courses:
+        if course.measures:
+            clean_grids = _sanitize_measures_rolls(course.measures)
+            for m, grid in zip(course.measures, clean_grids):
+                m.notes = grid
+        balloon_total = sum(1 for m in course.measures for n in m.notes if n == TaikoNote.BALLOON.value)
+        while len(course.balloon_counts) < balloon_total:
+            course.balloon_counts.append(10)
+        if len(course.balloon_counts) > balloon_total:
+            course.balloon_counts = course.balloon_counts[:balloon_total]
+        if overrides and course.difficulty in overrides.balloon_counts_by_course:
+            overrides.balloon_counts_by_course[course.difficulty] = list(course.balloon_counts)
+
+
+def _validate_manual_rolls(chart, auto_heal: bool = False) -> None:
+    if auto_heal:
+        _auto_heal_chart_rolls_and_balloons(chart)
+        return
     for course in chart.courses:
         active_roll = False
         balloon_total = 0
@@ -522,13 +543,15 @@ def create_app() -> FastAPI:
         proj_path = proj_dir / f"{slug}.taikolab.json"
         draft_path = proj_dir / f"{slug}.draft.tja"
 
+        # 1. ALWAYS write the project draft JSON first so user edits are NEVER lost!
+        proj_path.write_text(saved.model_dump_json(indent=2), encoding="utf-8")
+
+        # 2. Attempt to render companion draft .tja with auto-healing
         try:
-            if saved.mode == "imported_tja":
-                if not saved.source_tja_path:
-                    raise ValueError("Missing source_tja_path for imported TJA project.")
+            if saved.mode == "imported_tja" and saved.source_tja_path:
                 doc = load_tja(Path(saved.source_tja_path))
                 draft_chart = apply_tja_edits(doc, saved.overrides)
-                _validate_manual_rolls(draft_chart)
+                _auto_heal_chart_rolls_and_balloons(draft_chart, saved.overrides)
                 draft_path.write_bytes(render_tja_edits(doc, draft_chart, overrides=saved.overrides))
             elif saved.song_id:
                 cfg = load_config(saved.overrides.preset)
@@ -537,6 +560,7 @@ def create_app() -> FastAPI:
                     analysis = SongAnalysis.model_validate_json(analysis_path.read_text(encoding="utf-8"))
                     apply_chart_controls_to_config(cfg, saved.overrides)
                     draft_chart = arrange_song(analysis, cfg, overrides=saved.overrides)
+                    _auto_heal_chart_rolls_and_balloons(draft_chart, saved.overrides)
                     write_tja_file(
                         draft_chart,
                         draft_path,
@@ -544,10 +568,9 @@ def create_app() -> FastAPI:
                         normalize_scroll=cfg.settings.normalize_scroll_on_bpm_change,
                         target_highway_speed=cfg.settings.target_highway_speed,
                     )
-        except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception:
+            pass  # Project JSON is already safely saved
 
-        proj_path.write_text(saved.model_dump_json(indent=2), encoding="utf-8")
         return {
             "project_id": slug,
             "project_name": saved.project_name,

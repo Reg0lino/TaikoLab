@@ -577,6 +577,117 @@ def _clamp_monotonic_knots(knots_m: np.ndarray, raw_a: np.ndarray, min_slope: fl
     return np.array(clamped, dtype=np.float64)
 
 
+def _find_global_drum_offset(
+    midi_drums: list[DrumHit],
+    real_drums: list[DrumHit],
+    search_range_sec: float = 45.0,
+    tolerance_sec: float = 0.040,
+) -> tuple[float, int, int]:
+    """Find dominant global time lag across the search range.
+
+    Maximizes matching drum hits, then minimizes the total timing
+    residual of matched hits to resolve ambiguous periodic grooves.
+    """
+    m_ks = np.array(
+        sorted(h.time_sec for h in midi_drums if h.drum_class in ("kick", "snare")),
+        dtype=np.float64,
+    )
+    r_ks = np.array(
+        sorted(h.time_sec for h in real_drums if h.drum_class in ("kick", "snare")),
+        dtype=np.float64,
+    )
+    if len(m_ks) < 15 or len(r_ks) < 15:
+        return 0.0, 0, len(m_ks)
+
+    def score_lag(lag: float) -> tuple[int, float]:
+        shifted = m_ks + lag
+        idx = np.searchsorted(r_ks, shifted)
+
+        d1 = np.abs(r_ks[np.minimum(idx, len(r_ks) - 1)] - shifted)
+        d0 = np.abs(r_ks[np.maximum(idx - 1, 0)] - shifted)
+
+        residuals = np.minimum(d1, d0)
+        matched = residuals <= tolerance_sec
+
+        match_count = int(np.sum(matched))
+        residual_error = float(np.sum(residuals[matched]))
+
+        return match_count, residual_error
+
+    def is_better(
+        matches: int,
+        residual: float,
+        lag: float,
+        best_matches: int,
+        best_residual: float,
+        best_lag: float,
+    ) -> bool:
+        if matches > best_matches:
+            return True
+
+        if matches < best_matches:
+            return False
+
+        if residual < best_residual - 1e-9:
+            return True
+
+        if (
+            abs(residual - best_residual) <= 1e-9
+            and abs(lag) < abs(best_lag)
+        ):
+            return True
+
+        return False
+
+    # 1. Coarse search across the configured range with 20 ms steps.
+    best_lag = 0.0
+    best_matches = -1
+    best_residual = float("inf")
+
+    for lag in np.arange(
+        -search_range_sec,
+        search_range_sec + 0.025,
+        0.020,
+    ):
+        lag_value = float(lag)
+        matches, residual = score_lag(lag_value)
+
+        if is_better(
+            matches,
+            residual,
+            lag_value,
+            best_matches,
+            best_residual,
+            best_lag,
+        ):
+            best_matches = matches
+            best_residual = residual
+            best_lag = lag_value
+
+    # 2. Fine refinement around the coarse result with 5 ms steps.
+    fine_lag = best_lag
+    fine_matches = best_matches
+    fine_residual = best_residual
+
+    for lag in np.arange(best_lag - 0.12, best_lag + 0.125, 0.005):
+        lag_value = float(lag)
+        matches, residual = score_lag(lag_value)
+
+        if is_better(
+            matches,
+            residual,
+            lag_value,
+            fine_matches,
+            fine_residual,
+            fine_lag,
+        ):
+            fine_matches = matches
+            fine_residual = residual
+            fine_lag = lag_value
+
+    return fine_lag, fine_matches, len(m_ks)
+
+
 def _repair_broken_dtw_regions_with_drums(
     knots_m: np.ndarray,
     knots_a: np.ndarray,
@@ -893,8 +1004,16 @@ def _align_via_synctoolbox(
     Fs = 22050
     feature_rate = 50
 
+    # Universal Album vs Radio offset pre-lock: detect if drums are shifted by > 1.2s
+    global_lag, g_matches, g_total = _find_global_drum_offset(midi_drums, real_drums, search_range_sec=45.0)
+    pre_shift_sec = 0.0
+    if abs(global_lag) >= 1.2 and (g_matches / float(max(1, g_total))) >= 0.28:
+        pre_shift_sec = global_lag
+        print(f"[TaikoLab TabSync] Universal intro/outro offset detected: pre-shifting guide by {pre_shift_sec:+.3f}s ({g_matches}/{g_total} drum hits matched).")
+
     y_aud, _ = librosa.load(str(audio_path), sr=Fs, mono=True)
-    y_mid = _synthesize_midi_guide(synth_guide, duration_sec, fs=Fs)
+    shifted_guide = [(n[0] + pre_shift_sec, n[1] + pre_shift_sec, n[2], n[3]) for n in synth_guide]
+    y_mid = _synthesize_midi_guide(shifted_guide, duration_sec, fs=Fs)
 
     def _feats(y: np.ndarray):
         tuning = estimate_tuning(y, Fs)
@@ -933,7 +1052,8 @@ def _align_via_synctoolbox(
     last_note_t = max((n[0] for n in synth_guide), default=duration_sec)
 
     knots_m = np.arange(0.0, last_note_t + 2.0, 1.0)
-    knots_a = np.interp(knots_m, t_mid_wp, t_aud_wp)
+    # Map back to unshifted MIDI timeline
+    knots_a = np.interp(knots_m + pre_shift_sec, t_mid_wp, t_aud_wp)
 
     m_ks = np.array(sorted(h.time_sec for h in midi_drums if h.drum_class in ("kick", "snare")), dtype=np.float64)
     r_ks = np.array(sorted(h.time_sec for h in real_drums if h.drum_class in ("kick", "snare")), dtype=np.float64)

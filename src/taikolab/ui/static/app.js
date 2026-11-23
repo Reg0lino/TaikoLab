@@ -617,6 +617,9 @@ function populateChartControls() {
   document.getElementById("ctrlGuitarMin").value = String(gtrMin);
   document.getElementById("lblCtrlGuitarMin").textContent = Number(gtrMin).toFixed(2);
 
+  const cymSensPct = Math.round((ov.cymbal_sensitivity ?? 1.0) * 100);
+  document.getElementById("ctrlCymbalSens").value = String(cymSensPct);
+  document.getElementById("lblCtrlCymbalSens").textContent = `${cymSensPct}%`;
   document.getElementById("ctrlRideMode").value = ov.ride_cymbal_mode || "accents_and_solo";
   document.getElementById("ctrlEnableBigNotes").checked = ov.enable_big_notes !== false;
   document.getElementById("ctrlFoldBlasts").checked = Boolean(ov.fold_blasts_to_rolls);
@@ -647,6 +650,7 @@ function applyChartControlsToOverrides() {
   ov.section_phrase_variety = parseFloat(document.getElementById("ctrlSectionVariety").value) / 100.0;
   ov.vocal_min_strength = parseFloat(document.getElementById("ctrlVocalMin").value);
   ov.guitar_min_strength = parseFloat(document.getElementById("ctrlGuitarMin").value);
+  ov.cymbal_sensitivity = parseFloat(document.getElementById("ctrlCymbalSens").value) / 100.0;
   ov.ride_cymbal_mode = document.getElementById("ctrlRideMode").value;
   ov.enable_big_notes = document.getElementById("ctrlEnableBigNotes").checked;
   ov.fold_blasts_to_rolls = document.getElementById("ctrlFoldBlasts").checked;
@@ -2237,12 +2241,13 @@ function setRollSpan(start, end, code, existingRoll = null) {
     state.data.overrides.note_edits = {};
   }
   const patch = {};
+  // Explicitly erase any notes between start and end (including endpoints)
   for (const measure of course.measures) {
     const measureStart = measure.start_sec + offset;
     const duration = measure.end_sec - measure.start_sec;
     for (let slot = 0; slot < measure.notes.length; slot++) {
       const time = measureStart + (slot / measure.notes.length) * duration;
-      if (time > start.time && time < end.time) {
+      if (time >= start.time - 0.005 && time <= end.time + 0.005) {
         patch[editKey(measure.measure_idx, slot, measure.notes.length)] = 0;
       }
     }
@@ -3207,6 +3212,7 @@ bindSliderPair("ctrlTripleRamp", "lblCtrlTripleRamp", (v) => `${Math.round(v)}%`
 bindSliderPair("ctrlSectionVariety", "lblCtrlSecVariety", (v) => `${Math.round(v)}%`, 35, "btnResetCtrlSecVariety");
 bindSliderPair("ctrlVocalMin", "lblCtrlVocalMin", (v) => v.toFixed(2), 0.36, "btnResetCtrlVocalMin");
 bindSliderPair("ctrlGuitarMin", "lblCtrlGuitarMin", (v) => v.toFixed(2), 0.58, "btnResetCtrlGuitarMin");
+bindSliderPair("ctrlCymbalSens", "lblCtrlCymbalSens", (v) => `${Math.round(v)}%`, 100, "btnResetCtrlCymbalSens");
 ["ctrlRideMode", "ctrlEnableBigNotes", "ctrlFoldBlasts"].forEach((id) => {
   document.getElementById(id).addEventListener("change", () => {
     applyChartControlsToOverrides();

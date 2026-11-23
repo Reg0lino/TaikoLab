@@ -68,6 +68,38 @@ def _drum_priority(hit: DrumHit) -> float:
     return base * (0.5 + 0.5 * hit.velocity)
 
 
+def _merge_flam_drum_hits(drum_hits: list[DrumHit], flam_threshold_sec: float = 0.065) -> list[DrumHit]:
+    """Merge micro-displaced kick+snare/tom flams (<=65ms) so they do not produce colliding notes."""
+    if len(drum_hits) < 2:
+        return drum_hits
+    sorted_hits = sorted(drum_hits, key=lambda h: h.time_sec)
+    merged: list[DrumHit] = []
+    i = 0
+    while i < len(sorted_hits):
+        cur = sorted_hits[i]
+        if i + 1 < len(sorted_hits):
+            nxt = sorted_hits[i + 1]
+            classes = {cur.drum_class, nxt.drum_class}
+            dt = abs(nxt.time_sec - cur.time_sec)
+            if 0.005 <= dt <= flam_threshold_sec and "kick" in classes and ("snare" in classes or "tom" in classes):
+                hand_hit = nxt if nxt.drum_class in ("snare", "tom") else cur
+                foot_hit = cur if cur.drum_class == "kick" else nxt
+                merged.append(
+                    DrumHit(
+                        time_sec=hand_hit.time_sec,
+                        drum_class=hand_hit.drum_class,
+                        velocity=min(1.0, max(hand_hit.velocity, foot_hit.velocity * 0.95)),
+                        source=hand_hit.source,
+                        pitch=hand_hit.pitch,
+                    )
+                )
+                i += 2
+                continue
+        merged.append(cur)
+        i += 1
+    return merged
+
+
 def _nearest_time_distance(sorted_times: list[float], t: float) -> float:
     if not sorted_times:
         return float("inf")
@@ -218,7 +250,9 @@ def _rescue_solo_and_quiet_cymbals(
         if hit.drum_class == "ride" and plan.ride_cymbal_mode == "ignore":
             continue
 
-        eff_vel = min(1.0, hit.velocity * plan.drum_sensitivity)
+        if plan.cymbal_sensitivity <= 0.01:
+            continue
+        eff_vel = min(1.0, hit.velocity * plan.drum_sensitivity * plan.cymbal_sensitivity)
         key = (m_idx, s_idx)
         if key in placed:
             continue
@@ -271,11 +305,12 @@ def map_drum_hits(
     cfg: AppConfig,
 ) -> dict[tuple[int, int], PlacedCandidate]:
     """Map DrumHits onto cells with Hands-Over-Feet fills, tom-pitch, and solo cymbal intelligence."""
+    clean_hits = _merge_flam_drum_hits(drum_hits)
     placed: dict[tuple[int, int], PlacedCandidate] = {}
     ignored_cymbals: list[DrumHit] = []
     core_times: list[float] = []
 
-    for hit in drum_hits:
+    for hit in clean_hits:
         loc = time_to_measure_slot(hit.time_sec, slots)
         if loc is None:
             continue
@@ -285,7 +320,9 @@ def map_drum_hits(
         if plan.follow_mode in ("vocals", "guitar", "vocals_guitar"):
             continue
 
-        eff_vel = min(1.0, hit.velocity * plan.drum_sensitivity)
+        if plan.cymbal_sensitivity <= 0.01:
+            continue
+        eff_vel = min(1.0, hit.velocity * plan.drum_sensitivity * plan.cymbal_sensitivity)
         if hit.drum_class in ("hihat", "ride") and cfg.preset.drum_mapping.get(hit.drum_class) == "ignore":
             ignored_cymbals.append(hit)
             continue

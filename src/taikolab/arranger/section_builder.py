@@ -30,6 +30,7 @@ class MeasurePlan:
     groove_triple_ramp: float = 0.50
     groove_triple_max_bpm: float = 235.0
     ride_cymbal_mode: str = "accents_and_solo"
+    cymbal_sensitivity: float = 1.0
     gp_accent: bool = False
     gp_tremolo: bool = False
 
@@ -241,6 +242,7 @@ def build_measure_plans(
                 groove_triple_ramp=groove_triple_ramp,
                 groove_triple_max_bpm=groove_triple_max_bpm,
                 ride_cymbal_mode=(overrides.ride_cymbal_mode if overrides and overrides.ride_cymbal_mode else "accents_and_solo"),
+                cymbal_sensitivity=(overrides.cymbal_sensitivity if overrides and overrides.cymbal_sensitivity is not None else 1.0),
                 gp_accent=bool(analysis.gp_hints and s.measure_idx in analysis.gp_hints.accent_bars),
                 gp_tremolo=bool(analysis.gp_hints and s.measure_idx in analysis.gp_hints.tremolo_bars),
             )
