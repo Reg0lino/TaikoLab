@@ -625,3 +625,71 @@ Do not push or merge deployment-validation into master until the RTX 3050 test i
   - The existing GTX 1080 deployment-test folder should be retained as a known-working reference until the RTX 3050 test is complete.
 
 END OF ADDENDUM
+
+
+## HANDOVER ADDENDUM — Arranger Rules, Cymbal/Section Upgrades & GPU/Alignment Strategy
+
+Updated: 2026-11-23 (Continuation after `deployment-validation` / `7b52601` baseline)
+
+### 1. What Was Implemented Since the Deployment Addendum
+
+1. **Groove Triple-Stroke Pass (`src/taikolab/arranger/groove_triples.py`, `schemas.py`, `section_builder.py`, `difficulty.py`, `wizard.py`, `index.html`, `app.js`):**
+   - Added a post-ergonomics pass (`apply_groove_triples`) that injects Taiko-style 16th-note triples (`d-d-d _ k`, `k-k-k _ k`, reverse `k _ d-d-d`, and alternating `d-k-d`/`k-d-k`) into sparse repeating `4/4` rock/punk beats (`3–6` hits/bar, no existing adjacent 16ths). Dense fast skate-punk gallops (e.g., NOFX `10`-note/bar beats) are automatically skipped.
+   - Uses relative pocket scanning so pickup-shifted grooves (e.g., *Blink-182 - Aliens Exist* at slots `2, 4, 6, 14`) are detected instead of requiring notes on slots `0, 4, 8`.
+   - Protects Beat 1 downbeats (`slot 0` stays `DON` when anchored on `DON`).
+   - Replaced fixed triple counts with **`0–100%` Groove Triple Density** per course (`Easy=0%`, `Normal=15%`, `Hard=45%`, `Oni=70%`), paired with:
+     - **`Groove Triple Ending Ramp` (`0–100%`, default `50%`):** Deterministically weights selection so songs start sparser and build toward the final choruses/ending.
+     - **Decoupled per-course Complexity:** `Normal=15%`, `Hard=25%` (mostly same-color triples), `Oni=80%` (high alternating/dual-pocket complexity).
+     - **`Groove Triple Max BPM` (`120–300`, default `235`):** Hard/Oni use `<= max_bpm`; Normal uses `<= max(120, max_bpm - 15)`.
+   - **Test status at this milestone:** All **90 tests** passed and *Aliens Exist* arranged cleanly (`Easy 226`, `Normal 628`, `Hard 1052`, `Oni 1177`).
+
+2. **Fill Roll / Balloon Exit Pause & Course Caps (`hori_filter.py`, `section_builder.py`, `wizard.py`, `app.js`):**
+   - Blocked automatic `chaos_roll` blast-folding on `Easy` and `Normal` (fixing *Aliens Exist* `Easy` getting 9 accidental blast rolls).
+   - Updated Wizard/Console default fill-roll caps to **`Easy=1, Normal=4, Hard=5, Oni=6`**.
+   - Updated `_find_fill_roll_span` clearance in `hori_filter.py` to enforce a `>= max(220 ms, 3/16 bar)` exit pause before the next measure's downbeat, trimming roll `end_slot` backward (and clearing trailing intra-bar slots) instead of silently dropping Oni/Hard rolls. `chaos_roll` also leaves a `>= 220 ms` exit pause.
+
+3. **Pass 1 — Solo Cymbal & Quiet Hi-Hat Rescue (`mapper_drums.py`, `section_builder.py`):**
+   - Quiet time-keeping bars (`<= 2` core kick/snare/tom/crash hits and `>= 2` hi-hats/rides) now preserve `KAT` time-keeping on `Normal` (quarter-beat pocket), `Hard`, and `Oni` (up to 8ths), while keeping `Easy` minimal.
+   - Active bars rescue isolated solo cymbals (`ride`, open hi-hat `pitch=46`, and high-velocity `hihat`) only when clear of any core drum hit.
+   - **Pending verification:** After the initial 95-test run hit 2 failures (`test_4bar_repeated_phrases...` and `test_quiet_timekeeping...`), a 2-line fix was supplied (`_SOLO_CYMBAL_CLEARANCE_SEC = 0.250` and restricting `Normal` quiet hi-hats to `(s_idx % beat_step) == 0`), **but test re-run confirmation is still pending** in the next thread.
+
+4. **Pass 2 — Multi-Source Section Combos, Difficulty Checklist, Mark In/Out & `Auto-Split` (IN PROGRESS / PARTIALLY APPLIED):**
+   - **Already applied on disk:**
+     - `schemas.py` (`SectionDifficultyRule`, expanded `FollowMode`: `drums_vocals`, `vocals_guitar`, `all_balanced`), `section_builder.py`, `mapper_drums.py`, `mapper_vocals.py`, `mapper_fusion.py`.
+     - `server.py` (`POST /api/songs/{song_id}/sections/auto-split` detecting bar-aligned Intro/Verse/Chorus/Break blocks from energy/vocal/tempo/drum transitions).
+     - `index.html`, `styles.css`, and the first half of `app.js` (`markInSec`/`markOutSec`, `KeyI`/`KeyO`, `difficulty_rules` inspector sync).
+   - **Still pending completion in the next thread:**
+     - The final event-handler block in `app.js` (`btnMarkIn`, `btnMarkOut`, `btnCreateMarkedSection`, `btnAutoSplitSections`, `secSrc*` checkboxes, and `btnConfirmApplySection` checklist modal) + the two Pass 2 unit tests (`test_per_difficulty_section_rule...` and `test_auto_split_sections_endpoint...`) + full `run_tests.ps1` verification.
+     - First action in next thread: inspect `git status --short`, verify the 2-line Pass 1 `mapper_drums.py` fix is present, finish the `app.js` tail + Pass 2 tests, and run `.\scripts\run_tests.ps1`.
+
+---
+
+### 2. How MIDI-Only Alignment Works Today (and Why Results Differ Without Demucs)
+
+In `src/taikolab/ingest/tab_sync.py` (`import_midi_aligned`):
+1. **SyncToolbox Chroma+DLNCO DTW still runs in MIDI-only (`use_stems=False`) mode:**
+   - `_parse_midi_unified()` parses MIDI bars, tempo changes, drums, vocals, and guitars, then `_synthesize_midi_guide()` renders sustained pitch tones + drum clicks.
+   - `_align_via_synctoolbox()` runs **CPU-only** `synctoolbox` Chroma+DLNCO DTW between that synthesized MIDI guide and the full mix (`audio_clean.wav`), fixing `(0,0)` intro/outro boundary lag.
+2. **Where `ADTOF` and Demucs change the result:**
+   - DTW alone can drift locally by `30–80 ms` in heavy/quiet sections. To refine and validate it, `tab_sync.py` runs 6-second window drum nudging and `_select_drum_alignment_warp()` (DTW vs. drum-validated affine warp) against detected `real_drums`.
+   - **With Demucs (`use_stems=True`):** `real_drums` comes from `ADTOF + 3-band DSP` run on the **clean isolated `stems/drums.wav`**.
+   - **Without Demucs (`use_stems=False`):** `real_drums` comes from `run_adtof_transcription(main_audio, device="cpu")` run on the **noisy full mix**. Distorted guitars, vocals, and bass mask kicks/snares and trigger false onsets, weakening both the 6s window snap and the affine-vs-DTW decision—which is why alignment feels worse without stems even though DTW still ran.
+   - Note: `ADTOF` was benchmarked on the GTX 1080 at **`1.63s` on CPU vs. `4.10s` on CUDA**, so `ADTOF` now defaults to CPU (zero VRAM load).
+
+---
+
+### 3. Next-Thread Goals: Reducing CPU/GPU Load Without Crashing the PC
+
+The GTX 1080 (`8 GB VRAM`, WDDM display GPU sharing VRAM with Windows DWM, VS Code, and Chromium/WebView2) hits **Windows WDDM TDR resets** (multiscreen glitch → black screen → GPU driver restart → CUDA `illegal memory access`) under sustained full-song `htdemucs` Transformer passes, while CPU-only `htdemucs` takes `~8–9 minutes` per song (`43.85s` per `15s` clip).
+
+Concrete methods to evaluate and implement next:
+1. **CPU Percussive Separation (`librosa.effects.hpss`) + `drum_dsp.py` (Zero GPU, ~2–4s):**
+   - Instead of `htdemucs` for MIDI alignment, run `librosa.effects.hpss` on `audio_clean.wav` (strips sustained harmonic guitar/synth/vocal bleed) and feed the percussive stem into `ADTOF (CPU) + 3-band DSP`. Tests whether alignment lock approaches Demucs quality with **0 MB VRAM** and **< 5s CPU time**.
+2. **Partial "Anchor-Only" Demucs Windows (`3 × 15s` instead of full song):**
+   - Benchmark showed `15s` `htdemucs` on GTX 1080 completes safely in **`1.48s` (`616 MB` VRAM)**. Separating only 2–3 short 15s windows (intro, mid-song, outro) gives clean `stems/drums.wav` anchors for affine/DTW validation in `< 5s` GPU time without sustained WDDM queue starvation.
+3. **Lighter Separation Model / Half-Precision / Pacing (`mdx_q` / `FP16`):**
+   - If full stems are ever needed on GPU, test pure-convolutional `mdx` / `mdx_q` (avoids heavy `htdemucs` Cross-Transformer attention kernels), `torch.autocast("cuda", dtype=torch.float16)`, `shifts=0`, and longer inter-window yields—or offload heavy full-song Demucs exclusively to the second PC (RTX 3050).
+4. **CPU Thread Caps (`torch.set_num_threads` / `OMP_NUM_THREADS`):**
+   - Cap CPU thread count during `ADTOF` / `SyncToolbox` / `HPSS` so background builds do not peg 100% CPU and freeze the UI/audio.
+5. **Local 4-Bar Drum-Stem Auto-Repair:**
+   - Extend `_print_sync_audit()` in `tab_sync.py` so any 4-bar island where `|median_err| > 30 ms` against percussive/anchor transients automatically snaps locally rather than relying solely on one global DTW-vs-affine choice.
