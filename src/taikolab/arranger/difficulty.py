@@ -367,7 +367,8 @@ def build_course(
         len(slots),
         variation_intensity,
     )
-    fused = _add_repeated_phrase_ride_accents(fused, drum_cands, drum_hits, slots, effective_rule_diff)
+    if not (overrides and overrides.ride_cymbal_mode == "ignore"):
+        fused = _add_repeated_phrase_ride_accents(fused, drum_cands, drum_hits, slots, effective_rule_diff)
     measures, auto_balloons = build_ergonomic_measures_with_balloons(
         fused, slots, plans, cfg, effective_rule_diff, analysis=effective_analysis
     )

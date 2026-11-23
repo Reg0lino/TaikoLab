@@ -44,7 +44,7 @@ def map_vocal_cadence(
         last_time = ev.time_sec
 
         if plan.enable_big_notes and eff_str >= cfg.preset.big_note_threshold:
-            note = TaikoNote.BIG_KAT
+            note = TaikoNote.BIG_DON if s_idx == 0 else TaikoNote.BIG_KAT
         else:
             note = TaikoNote.KAT if phrase_toggle else TaikoNote.DON
 

@@ -40,7 +40,7 @@ _FIELD = "#0e1319"
 _FOREGROUND = "#e7edf5"
 _MUTED = "#a3b0bf"
 _ACCENT = "#54a6ff"
-_DEFAULT_PRESET = "punk_gallop"
+_DEFAULT_PRESET = "taiko_auto"
 _DEFAULT_DENSITY_PERCENT = 100.0
 _DEFAULT_PHRASE_VARIATION = {"hard": 0.0, "oni": 0.0}
 _DEFAULT_FILL_ROLLS_BY_COURSE = {"easy": 1, "normal": 4, "hard": 5, "oni": 6}
@@ -181,12 +181,17 @@ class TaikoWizard:
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.audio_path = tk.StringVar()
         self.midi_path = tk.StringVar()
+        self.gp_path = tk.StringVar()
         self.last_audio_directory = self._saved_picker_directory(
             preferences.get("last_audio_directory")
         )
         self.last_midi_directory = self._saved_picker_directory(
             preferences.get("last_midi_directory"),
             fallback=self.last_audio_directory,
+        )
+        self.last_gp_directory = self._saved_picker_directory(
+            preferences.get("last_gp_directory"),
+            fallback=self.last_midi_directory,
         )
         self.title = tk.StringVar()
         self.artist = tk.StringVar()
@@ -263,6 +268,38 @@ class TaikoWizard:
                 else _DEFAULT_GROOVE_TRIPLE_MAX_BPM
             )
         )
+        self.section_phrase_variety = tk.DoubleVar(
+            value=(
+                chart_controls.section_phrase_variety * 100.0
+                if chart_controls.section_phrase_variety is not None
+                else 35.0
+            )
+        )
+        self.auto_section_on_build = tk.BooleanVar(
+            value=True if chart_controls.auto_section_on_build is None else bool(chart_controls.auto_section_on_build)
+        )
+        self.enable_big_notes = tk.BooleanVar(
+            value=True if chart_controls.enable_big_notes is None else bool(chart_controls.enable_big_notes)
+        )
+        self.fold_blasts_to_rolls = tk.BooleanVar(
+            value=False if chart_controls.fold_blasts_to_rolls is None else bool(chart_controls.fold_blasts_to_rolls)
+        )
+        self._ride_mode_labels = {
+            "accents_and_solo": "Solo & Phrase Accents",
+            "full_kat": "Full Ride as Ka",
+            "ignore": "Ignore Ride",
+        }
+        self._ride_label_to_mode = {v: k for k, v in self._ride_mode_labels.items()}
+        _saved_ride = chart_controls.ride_cymbal_mode or "accents_and_solo"
+        self.ride_cymbal_mode = tk.StringVar(value=self._ride_mode_labels.get(_saved_ride, "Solo & Phrase Accents"))
+        self.vocal_min_strength = tk.DoubleVar(
+            value=chart_controls.vocal_min_strength if chart_controls.vocal_min_strength is not None else 0.36
+        )
+        self.guitar_min_strength = tk.DoubleVar(
+            value=chart_controls.guitar_min_strength if chart_controls.guitar_min_strength is not None else 0.58
+        )
+        self.saved_profiles = dict(preferences.get("slider_profiles") or {}) if isinstance(preferences.get("slider_profiles"), dict) else {}
+        self.selected_slider_profile = tk.StringVar()
         self.density_scales = {
             difficulty: tk.DoubleVar(
                 value=(
@@ -314,9 +351,57 @@ class TaikoWizard:
             )
             for difficulty in ("easy", "normal", "hard", "oni")
         }
-        self.use_demucs_stems = tk.BooleanVar(
-            value=bool(preferences.get("use_demucs_stems", False))
+        _saved_demucs = bool(preferences.get("use_demucs_stems", False))
+        _saved_ingest = str(preferences.get("ingest_mode") or ("gpu_full" if _saved_demucs else "cpu_hpss"))
+        try:
+            from taikolab.ingest.stem_loader import is_pascal_or_older_gpu
+            _is_pascal, _ = is_pascal_or_older_gpu()
+            if _is_pascal and _saved_ingest in ("gpu_anchors", "gpu_full"):
+                _saved_ingest = "cpu_hpss"
+        except Exception:
+            pass
+        if _saved_ingest not in ("cpu_hpss", "gpu_anchors", "gpu_full"):
+            _saved_ingest = "gpu_full" if _saved_demucs else "cpu_hpss"
+        self._ingest_mode_labels = {
+            "cpu_hpss": "Fast CPU (MIDI + HPSS — 0 VRAM)",
+            "gpu_anchors": "Balanced GPU (Anchor Stems 3x12s — GTX 1080 safe)",
+            "gpu_full": "Full GPU Stems (GTX-1080 Paced — stems + solo preview)",
+        }
+        self._ingest_label_to_mode = {v: k for k, v in self._ingest_mode_labels.items()}
+        self.ingest_mode_label = tk.StringVar(value=self._ingest_mode_labels[_saved_ingest])
+        self.demucs_model = tk.StringVar(
+            value=str(preferences.get("demucs_model") or "htdemucs")
+            if preferences.get("demucs_model") in ("htdemucs", "mdx_q")
+            else "htdemucs"
         )
+        self.use_demucs_stems = tk.BooleanVar(value=_saved_ingest == "gpu_full")
+        self._syncing_ingest = False
+
+        def _on_demucs_bool(*_a: object) -> None:
+            if self._syncing_ingest:
+                return
+            self._syncing_ingest = True
+            try:
+                if self.use_demucs_stems.get():
+                    self.ingest_mode_label.set(self._ingest_mode_labels["gpu_full"])
+                elif self._ingest_label_to_mode.get(self.ingest_mode_label.get()) == "gpu_full":
+                    self.ingest_mode_label.set(self._ingest_mode_labels["cpu_hpss"])
+            finally:
+                self._syncing_ingest = False
+
+        def _on_ingest_label(*_a: object) -> None:
+            if self._syncing_ingest:
+                return
+            self._syncing_ingest = True
+            try:
+                mode = self._ingest_label_to_mode.get(self.ingest_mode_label.get(), "cpu_hpss")
+                self.use_demucs_stems.set(mode == "gpu_full")
+            finally:
+                self._syncing_ingest = False
+
+        self.use_demucs_stems.trace_add("write", _on_demucs_bool)
+        self.ingest_mode_label.trace_add("write", _on_ingest_label)
+
         self.append_version_tag = tk.BooleanVar(
             value=bool(preferences.get("append_version_tag", True))
         )
@@ -399,22 +484,37 @@ class TaikoWizard:
         ttk.Label(files, text="MIDI (recommended)").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=(8, 0))
         ttk.Entry(files, textvariable=self.midi_path).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
         ttk.Button(files, text="Browse…", command=self._browse_midi).grid(row=2, column=2, pady=(8, 0))
-        ttk.Label(
-            files,
-            text="GP files are not used in this version. MIDI is optional; without it, local audio analysis is used.",
-            style="Muted.TLabel",
-            wraplength=800,
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Checkbutton(
-            files,
-            text="Separate stems with Demucs (GPU heavy — leave unchecked for fast lightweight MIDI builds)",
-            variable=self.use_demucs_stems,
-        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Label(files, text="Guitar Pro (.gp optional)").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=(8, 0))
+        ttk.Entry(files, textvariable=self.gp_path).grid(row=3, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
+        ttk.Button(files, text="Browse…", command=self._browse_gp).grid(row=3, column=2, pady=(8, 0))
+        ingest_row = ttk.Frame(files, style="Surface.TFrame")
+        ingest_row.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        ingest_row.columnconfigure(1, weight=1)
+        ttk.Label(ingest_row, text="Alignment / GPU Mode").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Combobox(
+            ingest_row,
+            textvariable=self.ingest_mode_label,
+            values=tuple(self._ingest_mode_labels.values()),
+            state="readonly",
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        ttk.Label(ingest_row, text="Stem Model").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            ingest_row,
+            textvariable=self.demucs_model,
+            values=("htdemucs", "mdx_q"),
+            state="readonly",
+            width=11,
+        ).grid(row=0, column=3, sticky="e")
         ttk.Checkbutton(
             files,
             text=f"Append dev version tag (--auto{DEV_CHART_VERSION}) to in-game chart title",
             variable=self.append_version_tag,
-        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(
+            files,
+            text="Auto-section song on build (uses .gp section markers or audio/MIDI structure)",
+            variable=self.auto_section_on_build,
+        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         metadata = ttk.Frame(outer, style="Surface.TFrame", padding=14)
         metadata.grid(row=3, column=0, sticky="ew", pady=(0, 10))
@@ -636,6 +736,64 @@ class TaikoWizard:
                 "{:.0f}%",
                 default_value=_DEFAULT_GROOVE_TRIPLE_DENSITY_BY_COURSE[difficulty],
             )
+        self._add_slider(
+            controls,
+            34,
+            "Section phrase variety (stem rotation)",
+            self.section_phrase_variety,
+            0,
+            100,
+            5,
+            "{:.0f}%",
+            default_value=35.0,
+        )
+        self._add_slider(
+            controls,
+            35,
+            "Vocal onset threshold (lower = more notes)",
+            self.vocal_min_strength,
+            0.15,
+            0.85,
+            0.03,
+            "{:.2f}",
+            default_value=0.36,
+        )
+        self._add_slider(
+            controls,
+            36,
+            "Guitar onset threshold (lower = more riffs)",
+            self.guitar_min_strength,
+            0.20,
+            0.90,
+            0.03,
+            "{:.2f}",
+            default_value=0.58,
+        )
+        ttk.Label(controls, text="Ride cymbal mode").grid(row=37, column=0, sticky="w", padx=(0, 10), pady=(4, 0))
+        ttk.Combobox(
+            controls,
+            textvariable=self.ride_cymbal_mode,
+            values=tuple(self._ride_mode_labels.values()),
+            state="readonly",
+        ).grid(row=37, column=1, sticky="w", pady=(4, 0))
+        toggles_row = ttk.Frame(controls, style="Surface.TFrame")
+        toggles_row.grid(row=38, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(toggles_row, text="Enable Big Notes (3/4)", variable=self.enable_big_notes).pack(side="left", padx=(0, 16))
+        ttk.Checkbutton(toggles_row, text="Fold blast beats into drumrolls (off = keep fast notes)", variable=self.fold_blasts_to_rolls).pack(side="left")
+
+        prof_row = ttk.Frame(controls, style="Surface.TFrame")
+        prof_row.grid(row=39, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        ttk.Label(prof_row, text="Saved Slider Profile").pack(side="left", padx=(0, 8))
+        self.slider_profile_box = ttk.Combobox(
+            prof_row,
+            textvariable=self.selected_slider_profile,
+            values=sorted(self.saved_profiles.keys()),
+            width=22,
+        )
+        self.slider_profile_box.pack(side="left", padx=(0, 6))
+        ttk.Button(prof_row, text="Load", command=self._load_slider_profile).pack(side="left", padx=(0, 4))
+        ttk.Button(prof_row, text="Save", command=self._save_slider_profile).pack(side="left", padx=(0, 4))
+        ttk.Button(prof_row, text="Delete", command=self._delete_slider_profile).pack(side="left")
 
         ttk.Label(options, text="Output folder").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=(8, 0))
         ttk.Entry(options, textvariable=self.songs_directory).grid(
@@ -807,6 +965,20 @@ class TaikoWizard:
             self.last_midi_directory = str(Path(selected).parent)
             self._remember_picker_directory(midi_directory=Path(selected).parent)
 
+    def _browse_gp(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Choose optional Guitar Pro file (for section & accent hints)",
+            initialdir=self._picker_initial_directory(
+                self.gp_path.get(),
+                self.last_gp_directory,
+            ),
+            filetypes=[("Guitar Pro files", "*.gp *.gpx *.gp5 *.gp4 *.gp3"), ("All files", "*.*")],
+        )
+        if selected:
+            self.gp_path.set(selected)
+            self.last_gp_directory = str(Path(selected).parent)
+            self._remember_picker_directory(gp_directory=Path(selected).parent)
+
     @staticmethod
     def _saved_picker_directory(value: object, fallback: str | None = None) -> str:
         if isinstance(value, str):
@@ -848,12 +1020,14 @@ class TaikoWizard:
         *,
         audio_directory: Path | None = None,
         midi_directory: Path | None = None,
+        gp_directory: Path | None = None,
     ) -> None:
         try:
             save_wizard_preferences(
                 self.cfg.root_dir,
                 last_audio_directory=str(audio_directory) if audio_directory else None,
                 last_midi_directory=str(midi_directory) if midi_directory else None,
+                last_gp_directory=str(gp_directory) if gp_directory else None,
             )
         except (OSError, ValueError) as exc:
             messagebox.showwarning(
@@ -1047,6 +1221,62 @@ class TaikoWizard:
             return new_id, False, ver_var.get()
         return base_id, True, ver_var.get()
 
+
+    def _save_slider_profile(self) -> None:
+        name = self.selected_slider_profile.get().strip()
+        if not name:
+            messagebox.showerror("Profile name required", "Type a profile name in the Saved Slider Profile box first.")
+            return
+        self.saved_profiles[name] = self._chart_control_settings().model_dump(exclude_none=True)
+        save_wizard_preferences(self.cfg.root_dir, slider_profiles=self.saved_profiles)
+        self.slider_profile_box.configure(values=sorted(self.saved_profiles.keys()))
+        self.metadata_status.set(f"Saved slider profile '{name}'.")
+
+    def _load_slider_profile(self) -> None:
+        name = self.selected_slider_profile.get().strip()
+        raw = self.saved_profiles.get(name)
+        if not isinstance(raw, dict):
+            messagebox.showerror("Profile not found", "Select a saved slider profile to load.")
+            return
+        c = ChartControlSettings.model_validate(raw)
+        if c.target_highway_speed is not None: self.highway_speed.set(c.target_highway_speed)
+        if c.big_note_threshold is not None: self.big_note_threshold.set(c.big_note_threshold)
+        if c.quiet_guitar_rms_threshold is not None: self.quiet_guitar_threshold.set(c.quiet_guitar_rms_threshold)
+        if c.quiet_guitar_behavior is not None:
+            self.quiet_guitar_behavior.set("One downbeat" if c.quiet_guitar_behavior == "downbeat" else "Leave empty")
+        if c.section_phrase_variety is not None: self.section_phrase_variety.set(c.section_phrase_variety * 100.0)
+        if c.auto_section_on_build is not None: self.auto_section_on_build.set(c.auto_section_on_build)
+        if c.enable_big_notes is not None: self.enable_big_notes.set(c.enable_big_notes)
+        if c.fold_blasts_to_rolls is not None: self.fold_blasts_to_rolls.set(c.fold_blasts_to_rolls)
+        if c.ride_cymbal_mode is not None:
+            self.ride_cymbal_mode.set(self._ride_mode_labels.get(c.ride_cymbal_mode, "Solo & Phrase Accents"))
+        if c.vocal_min_strength is not None: self.vocal_min_strength.set(c.vocal_min_strength)
+        if c.guitar_min_strength is not None: self.guitar_min_strength.set(c.guitar_min_strength)
+        if c.groove_triple_max_bpm is not None: self.groove_triple_max_bpm.set(c.groove_triple_max_bpm)
+        if c.groove_triple_ramp is not None: self.groove_triple_ramp.set(c.groove_triple_ramp * 100.0)
+        for d, cap in c.fill_rolls_by_course.items():
+            if d in self.fill_roll_caps: self.fill_roll_caps[d].set(cap)
+        for d, den in c.groove_triple_density_by_course.items():
+            if d in self.groove_triple_densities: self.groove_triple_densities[d].set(den * 100.0)
+        for d, comp in c.groove_triple_complexity_by_course.items():
+            if d in self.groove_triple_complexities: self.groove_triple_complexities[d].set(comp * 100.0)
+        source_labels = {"auto": "Automatic", "drums": "Drums", "hybrid": "Balanced", "vocals": "Vocals", "guitar": "Guitar"}
+        for d, rule in c.difficulty_overrides.items():
+            if d in self.density_scales and rule.density_scale is not None:
+                self.density_scales[d].set(rule.density_scale * 100.0)
+            if d in self.phrase_variations and rule.phrase_variation is not None:
+                self.phrase_variations[d].set(rule.phrase_variation * 100.0)
+            if d in self.source_modes and rule.follow_mode is not None:
+                self.source_modes[d].set(source_labels.get(rule.follow_mode, "Automatic"))
+        self.metadata_status.set(f"Loaded slider profile '{name}'.")
+
+    def _delete_slider_profile(self) -> None:
+        name = self.selected_slider_profile.get().strip()
+        if name in self.saved_profiles:
+            del self.saved_profiles[name]
+            save_wizard_preferences(self.cfg.root_dir, slider_profiles=self.saved_profiles)
+            self.slider_profile_box.configure(values=sorted(self.saved_profiles.keys()))
+            self.selected_slider_profile.set("")
     def _chart_control_settings(self) -> ChartControlSettings:
         source_modes = {
             "Automatic": "auto",
@@ -1106,6 +1336,25 @@ class TaikoWizard:
                 if hasattr(self, "groove_triple_max_bpm")
                 else None
             ),
+            section_phrase_variety=(
+                float(self.section_phrase_variety.get()) / 100.0
+                if hasattr(self, "section_phrase_variety")
+                else 0.35
+            ),
+            auto_section_on_build=(
+                bool(self.auto_section_on_build.get())
+                if hasattr(self, "auto_section_on_build")
+                else True
+            ),
+            enable_big_notes=(bool(self.enable_big_notes.get()) if hasattr(self, "enable_big_notes") else True),
+            fold_blasts_to_rolls=(bool(self.fold_blasts_to_rolls.get()) if hasattr(self, "fold_blasts_to_rolls") else False),
+            ride_cymbal_mode=(
+                self._ride_label_to_mode.get(self.ride_cymbal_mode.get(), "accents_and_solo")
+                if hasattr(self, "ride_cymbal_mode")
+                else "accents_and_solo"
+            ),
+            vocal_min_strength=(float(self.vocal_min_strength.get()) if hasattr(self, "vocal_min_strength") else 0.36),
+            guitar_min_strength=(float(self.guitar_min_strength.get()) if hasattr(self, "guitar_min_strength") else 0.58),
             difficulty_overrides=difficulty_overrides,
         )
 
@@ -1120,6 +1369,11 @@ class TaikoWizard:
             return
         if midi is not None and (not midi.is_file() or midi.suffix.lower() not in (".mid", ".midi")):
             messagebox.showerror("MIDI not found", "Choose an existing .mid or .midi file, or clear that field.")
+            return
+        gp_text = self.gp_path.get().strip()
+        gp_file = Path(gp_text) if gp_text else None
+        if gp_file is not None and (not gp_file.is_file() or gp_file.suffix.lower() not in (".gp", ".gpx", ".gp5", ".gp4", ".gp3")):
+            messagebox.showerror("Guitar Pro file not found", "Choose an existing .gp/.gpx/.gp5 file, or clear that field.")
             return
         if not self.title.get().strip() or not self.artist.get().strip():
             messagebox.showerror("Song details required", "Confirm both the song title and artist.")
@@ -1148,6 +1402,8 @@ class TaikoWizard:
         metadata_source = self.metadata_source
         chart_controls = self._chart_control_settings()
         use_demucs = bool(self.use_demucs_stems.get())
+        ingest_mode = self._ingest_label_to_mode.get(self.ingest_mode_label.get(), "cpu_hpss")
+        demucs_model = self.demucs_model.get() or "htdemucs"
         try:
             save_wizard_preferences(
                 self.cfg.root_dir,
@@ -1155,6 +1411,8 @@ class TaikoWizard:
                 chart_controls=chart_controls.model_dump(exclude_none=True),
                 use_demucs_stems=use_demucs,
                 append_version_tag=use_version_tag,
+                ingest_mode=ingest_mode,
+                demucs_model=demucs_model,
             )
         except (OSError, ValueError) as exc:
             messagebox.showerror("Could not save setting", str(exc))
@@ -1179,6 +1437,9 @@ class TaikoWizard:
                 replace_existing,
                 chart_controls,
                 use_demucs,
+                ingest_mode,
+                demucs_model,
+                gp_file,
             ),
             daemon=True,
         ).start()
@@ -1196,6 +1457,9 @@ class TaikoWizard:
         replace_existing: bool,
         chart_controls: ChartControlSettings | None = None,
         use_demucs: bool = False,
+        ingest_mode: str = "cpu_hpss",
+        demucs_model: str = "htdemucs",
+        gp_source: Path | None = None,
     ) -> None:
         song_dir = self.cfg.song_dir(song_id)
         had_workspace = song_dir.exists()
@@ -1228,7 +1492,7 @@ class TaikoWizard:
                         simulator_backups.append((conflict, backup))
                     self.events.put(("log", f"Existing simulator files backed up to {backup_dir}"))
 
-            staged_audio, staged_midi = stage_song_inputs(song_dir, audio_source, midi_source)
+            staged_audio, staged_midi = stage_song_inputs(song_dir, audio_source, midi_source, gp_source=gp_source)
             if chart_controls is not None:
                 overrides = SongOverrides(
                     song_id=song_id,
@@ -1249,6 +1513,7 @@ class TaikoWizard:
                 preset=preset,
                 audio_source=audio_source,
                 midi_source=midi_source,
+                gp_source=gp_source,
                 metadata_source=metadata_source,
                 status="building",
             )
@@ -1269,11 +1534,15 @@ class TaikoWizard:
                 preset,
             ]
             if staged_midi:
-                command.extend(("--tab", str(staged_midi)))
-                if use_demucs:
+                command.extend(("--tab", str(staged_midi), "--ingest-mode", ingest_mode, "--demucs-model", demucs_model))
+                from taikolab.song_setup import find_staged_gp_input
+                staged_gp = find_staged_gp_input(song_dir)
+                if staged_gp:
+                    command.extend(("--gp", str(staged_gp)))
+                if use_demucs or ingest_mode == "gpu_full":
                     command.append("--use-stems")
             else:
-                command.append("--force")
+                command.extend(("--demucs-model", demucs_model, "--force"))
             self.events.put(("log", f"Staged audio: {staged_audio.name}"))
             self.events.put(("log", f"Staged MIDI: {staged_midi.name}" if staged_midi else "No MIDI selected; using local audio analysis."))
             self.events.put(("log", "Running TaikoLab build. No audio or MIDI is uploaded."))
@@ -1308,6 +1577,7 @@ class TaikoWizard:
                 preset=preset,
                 audio_source=audio_source,
                 midi_source=midi_source,
+                gp_source=gp_source,
                 metadata_source=metadata_source,
                 status="complete",
             )

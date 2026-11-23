@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from taikolab.arranger.engine import arrange_song
-from taikolab.config import load_config
+from taikolab.config import apply_chart_controls_to_config, load_config
 from taikolab.exporters.diagnostics import format_chart_report
 from taikolab.exporters.tja_writer import export_to_opentaiko, write_tja_file
 from taikolab.schemas import SongAnalysis, SongOverrides
@@ -24,6 +24,8 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         title=args.title,
         artist=args.artist,
         device=args.device,
+        demucs_model=getattr(args, "demucs_model", "htdemucs"),
+        gp_path=Path(args.gp) if getattr(args, "gp", None) else find_staged_gp_input(song_dir),
     )
 
 
@@ -32,6 +34,12 @@ def _cmd_import_tab(args: argparse.Namespace) -> None:
 
     cfg = load_config(args.preset)
     song_dir = cfg.song_dir(args.song)
+    use_stems = bool(getattr(args, "use_stems", False))
+    from taikolab.song_setup import find_staged_gp_input
+
+    ingest_mode = getattr(args, "ingest_mode", None)
+    if ingest_mode is None and use_stems:
+        ingest_mode = "gpu_full"
     import_midi_aligned(
         song_id=args.song,
         song_dir=song_dir,
@@ -39,7 +47,10 @@ def _cmd_import_tab(args: argparse.Namespace) -> None:
         title=args.title,
         artist=args.artist,
         manual_offset_sec=args.offset,
-        use_stems=bool(getattr(args, "use_stems", False)),
+        use_stems=use_stems,
+        ingest_mode=ingest_mode,
+        demucs_model=getattr(args, "demucs_model", "htdemucs"),
+        gp_path=Path(args.gp) if getattr(args, "gp", None) else find_staged_gp_input(song_dir),
     )
     _cmd_arrange(args)
 
@@ -73,12 +84,28 @@ def _cmd_arrange(args: argparse.Namespace) -> None:
         overrides = SongOverrides.model_validate_json(overrides_path.read_text(encoding="utf-8"))
         if overrides.preset and not args.preset:
             cfg = load_config(overrides.preset)
-        if overrides.target_highway_speed is not None:
-            cfg.settings.target_highway_speed = overrides.target_highway_speed
-        if overrides.big_note_threshold is not None:
-            cfg.preset.big_note_threshold = overrides.big_note_threshold
-        if overrides.quiet_guitar_rms_threshold is not None:
-            cfg.settings.quiet_guitar_rms_threshold = overrides.quiet_guitar_rms_threshold
+        apply_chart_controls_to_config(cfg, overrides)
+
+    auto_sec = (
+        overrides.auto_section_on_build
+        if overrides and overrides.auto_section_on_build is not None
+        else bool(analysis.gp_hints and analysis.gp_hints.sections)
+    )
+    if auto_sec and (overrides is None or not overrides.sections):
+        from taikolab.arranger.quantizer import build_measure_slots
+        from taikolab.arranger.section_builder import auto_build_sections
+
+        auto_secs = auto_build_sections(analysis, build_measure_slots(analysis, overrides))
+        if auto_secs:
+            if overrides is None:
+                overrides = SongOverrides(
+                    song_id=args.song,
+                    title=analysis.title,
+                    artist=analysis.artist,
+                    preset=cfg.preset.name,
+                )
+            overrides.sections = auto_secs
+            overrides_path.write_text(overrides.model_dump_json(indent=2), encoding="utf-8")
 
     chart = arrange_song(analysis, cfg, overrides=overrides)
     tja_path = song_dir / f"{args.song}.tja"
@@ -131,6 +158,7 @@ def main() -> None:
     p_an.add_argument("--artist", default="Unknown")
     p_an.add_argument("--preset", default=None)
     p_an.add_argument("--device", default="cuda")
+    p_an.add_argument("--demucs-model", default="htdemucs", choices=("htdemucs", "mdx_q"))
     p_an.set_defaults(func=_cmd_analyze)
 
     p_tab = sub.add_parser("import-tab", help="Align MIDI tab to song audio & build .tja")
@@ -141,6 +169,9 @@ def main() -> None:
     p_tab.add_argument("--preset", default=None)
     p_tab.add_argument("--offset", type=float, default=None, help="Optional manual lag override in seconds")
     p_tab.add_argument("--use-stems", action="store_true", help="Run Demucs stem separation before MIDI alignment")
+    p_tab.add_argument("--ingest-mode", default=None, choices=("cpu_hpss", "gpu_anchors", "gpu_full"))
+    p_tab.add_argument("--demucs-model", default="htdemucs", choices=("htdemucs", "mdx_q"))
+    p_tab.add_argument("--gp", default=None, help="Optional Guitar Pro (.gp) file for section & accent hints")
     p_tab.set_defaults(func=_cmd_import_tab)
 
     p_ar = sub.add_parser("arrange", help="Generate .tja quickly from cached analysis.json")
@@ -154,6 +185,7 @@ def main() -> None:
     p_bu.add_argument("--artist", default="Unknown")
     p_bu.add_argument("--preset", default=None)
     p_bu.add_argument("--device", default="cuda")
+    p_bu.add_argument("--demucs-model", default="htdemucs", choices=("htdemucs", "mdx_q"))
     p_bu.add_argument("--force", action="store_true")
     p_bu.set_defaults(func=_cmd_build)
 

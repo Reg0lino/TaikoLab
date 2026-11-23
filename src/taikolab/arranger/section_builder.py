@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from taikolab.arranger.quantizer import MeasureSlot
 from taikolab.config import AppConfig
-from taikolab.schemas import DifficultyLevel, FollowMode, SectionOverride, SongAnalysis, SongOverrides
+from taikolab.schemas import DifficultyLevel, FollowMode, SectionDifficultyRule, SectionOverride, SongAnalysis, SongOverrides
 
 
 @dataclass
@@ -29,6 +29,9 @@ class MeasurePlan:
     groove_triple_complexity: float = 0.25
     groove_triple_ramp: float = 0.50
     groove_triple_max_bpm: float = 235.0
+    ride_cymbal_mode: str = "accents_and_solo"
+    gp_accent: bool = False
+    gp_tremolo: bool = False
 
 
 def _default_mode_for_difficulty(difficulty: DifficultyLevel, cfg: AppConfig) -> FollowMode:
@@ -181,8 +184,17 @@ def build_measure_plans(
         ov = _find_section_override(mid, overrides)
         drum_sens = 1.0
         vocal_sens = 1.0
-        enable_big = cfg.preset.enable_big_notes and (difficulty != "easy")
-        fold_blasts = cfg.preset.fold_blasts_to_rolls
+        base_big = (
+            overrides.enable_big_notes
+            if overrides and overrides.enable_big_notes is not None
+            else cfg.preset.enable_big_notes
+        )
+        enable_big = base_big and (difficulty != "easy")
+        fold_blasts = (
+            overrides.fold_blasts_to_rolls
+            if overrides and overrides.fold_blasts_to_rolls is not None
+            else cfg.preset.fold_blasts_to_rolls
+        )
         max_nps = base_max_nps
 
         if ov is not None:
@@ -228,7 +240,223 @@ def build_measure_plans(
                 groove_triple_complexity=groove_triple_complexity,
                 groove_triple_ramp=groove_triple_ramp,
                 groove_triple_max_bpm=groove_triple_max_bpm,
+                ride_cymbal_mode=(overrides.ride_cymbal_mode if overrides and overrides.ride_cymbal_mode else "accents_and_solo"),
+                gp_accent=bool(analysis.gp_hints and s.measure_idx in analysis.gp_hints.accent_bars),
+                gp_tremolo=bool(analysis.gp_hints and s.measure_idx in analysis.gp_hints.tremolo_bars),
             )
         )
 
+    variety = (
+        overrides.section_phrase_variety
+        if overrides and overrides.section_phrase_variety is not None
+        else 0.35
+    )
+    _apply_section_phrase_variation(plans, slots, analysis, difficulty, overrides, variety)
     return plans
+
+def _rules_for_section_role(role: str, has_vocals: bool, has_drums: bool) -> tuple[FollowMode, dict[DifficultyLevel, SectionDifficultyRule]]:
+    if role == "intro":
+        return "auto", {
+            "easy": SectionDifficultyRule(follow_mode="guitar" if not has_drums else "drums"),
+            "normal": SectionDifficultyRule(follow_mode="guitar" if not has_drums else "drums"),
+            "hard": SectionDifficultyRule(follow_mode="guitar" if not has_drums else "hybrid"),
+            "oni": SectionDifficultyRule(follow_mode="guitar" if not has_drums else "hybrid"),
+        }
+    if role == "verse":
+        return "auto", {
+            "easy": SectionDifficultyRule(follow_mode="vocals" if has_vocals else "drums"),
+            "normal": SectionDifficultyRule(follow_mode="vocals" if has_vocals else "drums"),
+            "hard": SectionDifficultyRule(follow_mode="drums_vocals" if (has_vocals and has_drums) else ("drums" if has_drums else "guitar")),
+            "oni": SectionDifficultyRule(follow_mode="drums_vocals" if (has_vocals and has_drums) else "all_balanced"),
+        }
+    if role == "pre_chorus":
+        return "auto", {
+            "easy": SectionDifficultyRule(follow_mode="vocals" if has_vocals else "drums"),
+            "normal": SectionDifficultyRule(follow_mode="drums_vocals" if has_vocals else "drums"),
+            "hard": SectionDifficultyRule(follow_mode="drums_vocals" if has_vocals else "hybrid"),
+            "oni": SectionDifficultyRule(follow_mode="all_balanced"),
+        }
+    if role == "chorus":
+        return "auto", {
+            "easy": SectionDifficultyRule(follow_mode="vocals" if has_vocals else "drums"),
+            "normal": SectionDifficultyRule(follow_mode="drums_vocals" if has_vocals else "drums"),
+            "hard": SectionDifficultyRule(follow_mode="all_balanced"),
+            "oni": SectionDifficultyRule(follow_mode="all_balanced"),
+        }
+    if role in ("bridge", "interlude"):
+        return "auto", {
+            "easy": SectionDifficultyRule(follow_mode="vocals" if has_vocals else "guitar"),
+            "normal": SectionDifficultyRule(follow_mode="vocals_guitar" if has_vocals else "hybrid"),
+            "hard": SectionDifficultyRule(follow_mode="hybrid" if has_drums else "guitar"),
+            "oni": SectionDifficultyRule(follow_mode="all_balanced" if has_drums else "vocals_guitar"),
+        }
+    if role == "solo":
+        return "auto", {
+            "easy": SectionDifficultyRule(follow_mode="guitar" if not has_drums else "drums"),
+            "normal": SectionDifficultyRule(follow_mode="guitar"),
+            "hard": SectionDifficultyRule(follow_mode="hybrid" if has_drums else "guitar"),
+            "oni": SectionDifficultyRule(follow_mode="all_balanced" if has_drums else "guitar"),
+        }
+    return "auto", {}
+
+
+def auto_build_sections(analysis: SongAnalysis, slots: list[MeasureSlot]) -> list[SectionOverride]:
+    """Build bar-aligned musical sections from GP markers when present, else energy/stem transitions."""
+    if not slots:
+        return []
+
+    def _bar_stats(slot: MeasureSlot):
+        cores = sum(1 for h in analysis.drum_hits if slot.start_sec <= h.time_sec < slot.end_sec and h.drum_class not in ("hihat", "ride"))
+        vocals = sum(1 for v in analysis.vocal_events if slot.start_sec <= v.time_sec < slot.end_sec)
+        guitars = sum(1 for g in analysis.guitar_events if slot.start_sec <= g.time_sec < slot.end_sec)
+        pts = [max(p.drums_rms, p.vocals_rms, p.guitar_rms) for p in analysis.energy_curve if slot.start_sec <= p.time_sec < slot.end_sec]
+        energy = (sum(pts) / len(pts)) if pts else (0.7 if cores >= 3 else 0.25)
+        return cores, vocals, guitars, energy
+
+    stats = [_bar_stats(s) for s in slots]
+    gp_sections = list(analysis.gp_hints.sections) if analysis.gp_hints and analysis.gp_hints.sections else []
+
+    boundaries: list[tuple[int, str, str]] = []
+    if gp_sections:
+        seen_idx: set[int] = set()
+        for gm in gp_sections:
+            if gm.time_sec is not None:
+                b_idx = min(range(len(slots)), key=lambda i: abs(slots[i].start_sec - gm.time_sec))
+            else:
+                b_idx = max(0, min(len(slots) - 1, gm.bar_idx))
+            if b_idx not in seen_idx:
+                seen_idx.add(b_idx)
+                boundaries.append((b_idx, gm.label, gm.role))
+        boundaries.sort(key=lambda item: item[0])
+        if boundaries and boundaries[0][0] > 0:
+            boundaries.insert(0, (0, "Intro", "intro"))
+    else:
+        b_indices = [0]
+        last_b = 0
+        for i in range(1, len(slots)):
+            prev_c, prev_v, _, prev_e = stats[i - 1]
+            cur_c, cur_v, _, cur_e = stats[i]
+            bars_since = i - last_b
+            tempo_jump = abs(slots[i].bpm - slots[i - 1].bpm) >= 8.0 or (
+                slots[i].numerator != slots[i - 1].numerator or slots[i].denominator != slots[i - 1].denominator
+            )
+            intro_drop = prev_c <= 1 and cur_c >= 3 and bars_since >= 2
+            phrase_b = (i % 4 == 0) and bars_since >= 4
+            e_shift = abs(cur_e - prev_e) >= 0.22
+            v_shift = (prev_v >= 2) != (cur_v >= 2)
+            if tempo_jump or intro_drop or (phrase_b and (e_shift or v_shift or bars_since >= 16)):
+                b_indices.append(i)
+                last_b = i
+        for pos, bi in enumerate(b_indices):
+            end_i = b_indices[pos + 1] if pos + 1 < len(b_indices) else len(slots)
+            c_sum = sum(stats[k][0] for k in range(bi, end_i))
+            v_sum = sum(stats[k][1] for k in range(bi, end_i))
+            n_b = max(1, end_i - bi)
+            if pos == 0 and c_sum <= n_b:
+                role, tag = "intro", "Intro"
+            elif v_sum >= n_b * 1.5 and c_sum >= n_b * 2:
+                role, tag = "verse", "Verse / Vocals"
+            elif c_sum <= n_b and v_sum >= n_b:
+                role, tag = "bridge", "Vocal Break"
+            elif c_sum >= n_b * 3:
+                role, tag = "chorus", "Drive / Riff"
+            else:
+                role, tag = "interlude", "Instrumental"
+            boundaries.append((bi, f"Part {pos + 1} — {tag}", role))
+
+    out: list[SectionOverride] = []
+    for idx, (b_start, label, role) in enumerate(boundaries):
+        b_end = boundaries[idx + 1][0] if idx + 1 < len(boundaries) else len(slots)
+        if b_end <= b_start:
+            continue
+        seg_start = 0.0 if idx == 0 else round(slots[b_start].start_sec, 3)
+        seg_end = round(analysis.duration_sec, 3) if idx == len(boundaries) - 1 else round(slots[b_end].start_sec, 3)
+        if seg_end <= seg_start + 0.05:
+            continue
+        has_v = sum(stats[k][1] for k in range(b_start, b_end)) >= max(2, (b_end - b_start))
+        has_d = sum(stats[k][0] for k in range(b_start, b_end)) >= max(2, (b_end - b_start))
+        base_mode, diff_rules = _rules_for_section_role(role, has_v, has_d)
+        out.append(
+            SectionOverride(
+                start_sec=seg_start,
+                end_sec=seg_end,
+                label=label,
+                follow_mode=base_mode,
+                difficulty_rules=diff_rules,
+            )
+        )
+    return out
+
+
+def _apply_section_phrase_variation(
+    plans: list[MeasurePlan],
+    slots: list[MeasureSlot],
+    analysis: SongAnalysis,
+    difficulty: DifficultyLevel,
+    overrides: SongOverrides | None,
+    variety: float,
+) -> None:
+    """Procedurally rotate 2-bar/4-bar blocks (drums/vocals/guitar) inside long sections when active."""
+    if variety <= 0.01 or difficulty == "easy" or not slots:
+        return
+
+    sections = overrides.sections if overrides and overrides.sections else []
+    ranges: list[tuple[int, int, str]] = []
+    if sections:
+        for sec in sections:
+            idxs = [
+                i for i, s in enumerate(slots)
+                if sec.start_sec <= 0.5 * (s.start_sec + s.end_sec) < sec.end_sec
+            ]
+            if idxs:
+                ranges.append((idxs[0], idxs[-1] + 1, sec.label.lower()))
+    else:
+        ranges = [(0, len(slots), "song")]
+
+    block_len = 2 if variety >= 0.65 else 4
+    for r_start, r_end, label in ranges:
+        if (r_end - r_start) < block_len * 2:
+            continue
+        if any(k in label for k in ("intro", "outro")):
+            continue
+
+        for block_idx, b0 in enumerate(range(r_start, r_end, block_len)):
+            b1 = min(r_end, b0 + block_len)
+            if (b1 - b0) < 2:
+                continue
+            # Rotate only on alternate blocks at low/mid variety, or every non-first block at high variety
+            if variety < 0.50 and (block_idx % 2 == 0):
+                continue
+            if block_idx == 0:
+                continue
+
+            v_count = sum(
+                1 for v in analysis.vocal_events
+                if slots[b0].start_sec <= v.time_sec < slots[b1 - 1].end_sec
+            )
+            g_count = sum(
+                1 for g in analysis.guitar_events
+                if slots[b0].start_sec <= g.time_sec < slots[b1 - 1].end_sec
+            )
+            d_count = sum(
+                1 for h in analysis.drum_hits
+                if slots[b0].start_sec <= h.time_sec < slots[b1 - 1].end_sec
+                and h.drum_class not in ("hihat", "ride")
+            )
+            n_bars = b1 - b0
+            if any(plans[k].low_energy_guitar for k in range(b0, b1)):
+                continue
+
+            # Pick an active call-and-response source that differs from current block mode
+            cur_mode = plans[b0].follow_mode
+            chosen: FollowMode | None = None
+            if (block_idx % 3 == 1) and v_count >= n_bars * 2 and cur_mode != "vocals":
+                chosen = "vocals" if difficulty == "normal" else "drums_vocals"
+            elif (block_idx % 3 == 2) and g_count >= n_bars * 2 and cur_mode != "guitar":
+                chosen = "guitar" if (variety >= 0.70 or d_count < n_bars * 2) else "hybrid"
+            elif d_count >= n_bars * 2 and cur_mode not in ("drums", "all_balanced"):
+                chosen = "drums"
+
+            if chosen is not None:
+                for k in range(b0, b1):
+                    plans[k].follow_mode = chosen

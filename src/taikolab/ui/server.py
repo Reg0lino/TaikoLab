@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from taikolab.arranger.engine import arrange_song
-from taikolab.config import load_config
+from taikolab.config import apply_chart_controls_to_config, load_config, load_wizard_preferences, save_wizard_preferences
 from taikolab.exporters.diagnostics import analyze_course
 from taikolab.exporters.tja_writer import export_to_opentaiko, write_tja_file
 from taikolab.schemas import (
@@ -230,80 +230,12 @@ def fill_missed_double_gaps(taps: list[DownbeatMarker]) -> tuple[list[DownbeatMa
 
 
 def auto_split_sections_from_analysis(analysis: SongAnalysis) -> list[SectionOverride]:
-    """Segment song into bar-aligned musical sections using energy, vocals, tempo, and drum activity."""
+    """Segment song into bar-aligned musical sections using GP markers or audio/MIDI structure."""
     from taikolab.arranger.quantizer import build_measure_slots
+    from taikolab.arranger.section_builder import auto_build_sections
 
     slots = build_measure_slots(analysis)
-    if not slots:
-        return _default_sections_from_analysis(analysis)
-
-    def bar_profile(slot):
-        cores = sum(
-            1 for h in analysis.drum_hits
-            if slot.start_sec <= h.time_sec < slot.end_sec and h.drum_class not in ("hihat", "ride")
-        )
-        vocals = sum(1 for v in analysis.vocal_events if slot.start_sec <= v.time_sec < slot.end_sec)
-        guitars = sum(1 for g in analysis.guitar_events if slot.start_sec <= g.time_sec < slot.end_sec)
-        pts = [
-            max(p.drums_rms, p.vocals_rms, p.guitar_rms)
-            for p in analysis.energy_curve
-            if slot.start_sec <= p.time_sec < slot.end_sec
-        ]
-        energy = (sum(pts) / len(pts)) if pts else (0.7 if cores >= 3 else 0.25)
-        if cores <= 1 and vocals >= 2:
-            tag = "Vocal Break"
-        elif cores <= 1 and guitars >= 2:
-            tag = "Quiet / Guitar"
-        elif cores >= 2 and vocals >= 2:
-            tag = "Drums + Vocals"
-        elif cores >= 2:
-            tag = "Instrumental / Riff"
-        else:
-            tag = "Break"
-        return cores, vocals, guitars, energy, tag
-
-    profiles = [bar_profile(s) for s in slots]
-    boundaries = [0]
-    last_b = 0
-    for i in range(1, len(slots)):
-        prev_c, prev_v, _, prev_e, prev_tag = profiles[i - 1]
-        cur_c, cur_v, _, cur_e, cur_tag = profiles[i]
-        bars_since = i - last_b
-        tempo_jump = abs(slots[i].bpm - slots[i - 1].bpm) >= 8.0 or (
-            slots[i].numerator != slots[i - 1].numerator or slots[i].denominator != slots[i - 1].denominator
-        )
-        intro_drop_in = prev_c <= 1 and cur_c >= 3 and bars_since >= 2
-        phrase_boundary = (i % 4 == 0) and bars_since >= 4
-        energy_shift = abs(cur_e - prev_e) >= 0.22
-        role_shift = (cur_tag != prev_tag)
-        if tempo_jump or intro_drop_in or (phrase_boundary and (energy_shift or role_shift or bars_since >= 16)):
-            boundaries.append(i)
-            last_b = i
-
-    sections: list[SectionOverride] = []
-    for idx, b_start in enumerate(boundaries):
-        b_end = boundaries[idx + 1] if idx + 1 < len(boundaries) else len(slots)
-        if b_end <= b_start:
-            continue
-        seg_start = 0.0 if idx == 0 else round(slots[b_start].start_sec, 3)
-        seg_end = round(analysis.duration_sec, 3) if idx == len(boundaries) - 1 else round(slots[b_end].start_sec, 3)
-        if seg_end <= seg_start:
-            continue
-        tags = [profiles[k][4] for k in range(b_start, b_end)]
-        dom_tag = max(set(tags), key=tags.count)
-        if idx == 0 and sum(profiles[k][0] for k in range(b_start, b_end)) <= (b_end - b_start):
-            dom_tag = "Intro"
-        avg_bpm = sum(slots[k].bpm for k in range(b_start, b_end)) / max(1, b_end - b_start)
-        sections.append(
-            SectionOverride(
-                start_sec=seg_start,
-                end_sec=seg_end,
-                label=f"Part {len(sections) + 1} â€” {dom_tag} ({avg_bpm:.0f} BPM)",
-                follow_mode="auto",
-            )
-        )
-    return sections or _default_sections_from_analysis(analysis)
-
+    return auto_build_sections(analysis, slots) or _default_sections_from_analysis(analysis)
 
 def _default_sections_from_analysis(analysis: SongAnalysis) -> list[SectionOverride]:
     if not analysis.tempo_regions:
@@ -402,12 +334,7 @@ def _build_chart_payload(song_id: str, overrides: SongOverrides | None = None, e
         overrides_path.write_text(overrides.model_dump_json(indent=2), encoding="utf-8")
 
     cfg = load_config(overrides.preset or cfg.preset.name)
-    if overrides.target_highway_speed is not None:
-        cfg.settings.target_highway_speed = overrides.target_highway_speed
-    if overrides.big_note_threshold is not None:
-        cfg.preset.big_note_threshold = overrides.big_note_threshold
-    if overrides.quiet_guitar_rms_threshold is not None:
-        cfg.settings.quiet_guitar_rms_threshold = overrides.quiet_guitar_rms_threshold
+    apply_chart_controls_to_config(cfg, overrides)
     chart = arrange_song(analysis, cfg, overrides=overrides)
     for course in chart.courses:
         if course.difficulty in overrides.balloon_counts_by_course:
@@ -608,12 +535,7 @@ def create_app() -> FastAPI:
                 analysis_path = cfg.song_dir(saved.song_id) / "analysis.json"
                 if analysis_path.exists():
                     analysis = SongAnalysis.model_validate_json(analysis_path.read_text(encoding="utf-8"))
-                    if saved.overrides.target_highway_speed is not None:
-                        cfg.settings.target_highway_speed = saved.overrides.target_highway_speed
-                    if saved.overrides.big_note_threshold is not None:
-                        cfg.preset.big_note_threshold = saved.overrides.big_note_threshold
-                    if saved.overrides.quiet_guitar_rms_threshold is not None:
-                        cfg.settings.quiet_guitar_rms_threshold = saved.overrides.quiet_guitar_rms_threshold
+                    apply_chart_controls_to_config(cfg, saved.overrides)
                     draft_chart = arrange_song(analysis, cfg, overrides=saved.overrides)
                     write_tja_file(
                         draft_chart,
@@ -752,5 +674,33 @@ def create_app() -> FastAPI:
         if not target.exists():
             raise HTTPException(status_code=404, detail=f"Audio file missing: {target}")
         return FileResponse(str(target))
+
+    @app.get("/api/slider-profiles")
+    def list_slider_profiles():
+        cfg = load_config()
+        prefs = load_wizard_preferences(cfg.root_dir)
+        profiles = prefs.get("slider_profiles") or {}
+        return {"profiles": profiles if isinstance(profiles, dict) else {}}
+
+    @app.post("/api/slider-profiles/{name}")
+    def save_slider_profile(name: str, controls: dict):
+        clean_name = name.strip()[:60]
+        if not clean_name:
+            raise HTTPException(status_code=422, detail="Profile name is required.")
+        cfg = load_config()
+        prefs = load_wizard_preferences(cfg.root_dir)
+        profiles = dict(prefs.get("slider_profiles") or {})
+        profiles[clean_name] = controls
+        save_wizard_preferences(cfg.root_dir, slider_profiles=profiles)
+        return {"name": clean_name, "profiles": profiles}
+
+    @app.delete("/api/slider-profiles/{name}")
+    def delete_slider_profile(name: str):
+        cfg = load_config()
+        prefs = load_wizard_preferences(cfg.root_dir)
+        profiles = dict(prefs.get("slider_profiles") or {})
+        profiles.pop(name, None)
+        save_wizard_preferences(cfg.root_dir, slider_profiles=profiles)
+        return {"profiles": profiles}
 
     return app

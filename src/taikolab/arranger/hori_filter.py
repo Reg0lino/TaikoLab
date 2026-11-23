@@ -65,12 +65,13 @@ def _find_fill_roll_span(
 
             hit_count = end_idx - start_idx + 1
             span = end_time - start_time
-            is_fill = longest_source_run >= 3 or fill_voice_hits >= 3
+            # Must contain active snare/tom fill hits (never plain kick gallops)
+            is_fill = fill_voice_hits >= 3 and (longest_source_run >= 3 or fill_voice_hits >= 4)
             if (
                 hit_count < min_hits
                 or span < min_duration_sec
                 or not is_fill
-                or drum_events[end_idx][0] < int(slot.grid_size * 0.65)
+                or drum_events[end_idx][0] < int(slot.grid_size * 0.60)
             ):
                 continue
 
@@ -103,6 +104,66 @@ def _measure_mean_energy(analysis: SongAnalysis | None, slot: MeasureSlot) -> fl
         return None
     return sum(pts) / len(pts)
 
+
+def _is_section_transition_bar(
+    m_idx: int,
+    slots: list[MeasureSlot],
+    plans: list[MeasurePlan],
+    analysis: SongAnalysis | None,
+) -> tuple[bool, bool]:
+    """Return (precedes_boundary_or_4bar_turnaround, precedes_chorus_or_solo_drop)."""
+    is_4bar = ((m_idx + 1) % 4 == 0)
+    if m_idx + 1 >= len(slots):
+        return is_4bar, False
+    cur_mode = plans[m_idx].follow_mode
+    nxt_mode = plans[m_idx + 1].follow_mode
+    mode_switch = cur_mode != nxt_mode
+    drop_into_chorus = False
+    if analysis and analysis.gp_hints and analysis.gp_hints.sections:
+        nxt_t = slots[m_idx + 1].start_sec
+        for sec in analysis.gp_hints.sections:
+            if sec.time_sec is not None and abs(sec.time_sec - nxt_t) <= 0.35:
+                mode_switch = True
+                if sec.role in ("chorus", "solo"):
+                    drop_into_chorus = True
+                break
+    return (is_4bar or mode_switch), drop_into_chorus
+
+
+def _find_sustained_break_roll(
+    m_idx: int,
+    bar_dict: dict[int, PlacedCandidate],
+    slot: MeasureSlot,
+    plan: MeasurePlan,
+    analysis: SongAnalysis | None,
+    min_duration_sec: float,
+) -> tuple[int, int, int, float, float] | None:
+    """Offer a longer roll ONLY on true drum-free vocal holds (>=0.75s) right at a break/transition."""
+    if analysis is None or plan.low_energy_guitar or len(bar_dict) > 2:
+        return None
+    # Check actual song drums in analysis (not bar_dict, which is empty when Normal follows vocals)
+    real_bar_drums = sum(
+        1 for h in analysis.drum_hits
+        if slot.start_sec <= h.time_sec < slot.end_sec and h.drum_class not in ("hihat", "ride")
+    )
+    if real_bar_drums > 1:
+        return None
+    sustained = [
+        ev for ev in analysis.vocal_events
+        if slot.start_sec <= ev.time_sec < slot.end_sec and ev.duration_sec >= max(0.75, min_duration_sec)
+    ]
+    if not sustained:
+        return None
+    ev = max(sustained, key=lambda e: e.duration_sec)
+    dur = max(0.1, slot.end_sec - slot.start_sec)
+    start_slot = max(0, min(slot.grid_size - 6, int(round(((ev.time_sec - slot.start_sec) / dur) * slot.grid_size))))
+    end_slot = min(slot.grid_size - 2, start_slot + max(5, int(round((min(ev.duration_sec, dur * 0.75) / dur) * slot.grid_size))))
+    if end_slot <= start_slot + 4:
+        return None
+    span = _slot_time(slot, end_slot) - _slot_time(slot, start_slot)
+    if span < max(0.55, min_duration_sec):
+        return None
+    return start_slot, end_slot, 5, span, 0.78
 
 def build_ergonomic_measures_with_balloons(
     candidates: dict[tuple[int, int], PlacedCandidate],
@@ -152,11 +213,23 @@ def build_ergonomic_measures_with_balloons(
         for m_idx, (slot, bar_dict) in enumerate(zip(slots, by_measure)):
             if m_idx in roll_measures or not bar_dict:
                 continue
+            plan = plans[m_idx]
             found = _find_fill_roll_span(
                 bar_dict,
                 slot,
                 cfg.hori.min_roll_duration_sec,
             )
+            if found is None and plan.gp_tremolo and len(bar_dict) >= 3:
+                keys = sorted(bar_dict)
+                s0, s1 = keys[0], min(slot.grid_size - 2, keys[-1])
+                if s1 > s0 + 1:
+                    sp = _slot_time(slot, s1) - _slot_time(slot, s0)
+                    if sp >= cfg.hori.min_roll_duration_sec:
+                        found = (s0, s1, len(keys), sp, 0.86)
+            if found is None:
+                found = _find_sustained_break_roll(
+                    m_idx, bar_dict, slot, plan, analysis, cfg.hori.min_roll_duration_sec
+                )
             if found is not None:
                 start_slot, end_slot, hit_count, span_sec, avg_prio = found
                 bar_dur = slot.end_sec - slot.start_sec
@@ -193,10 +266,33 @@ def build_ergonomic_measures_with_balloons(
     if len(spaced_rolls) > roll_cap:
         last_idx = len(spaced_rolls) - 1
         if roll_cap == 1:
-            selected_indices = [round(last_idx / 2)]
+            base_indices = [round(last_idx / 2)]
         else:
-            selected_indices = [round(i * last_idx / (roll_cap - 1)) for i in range(roll_cap)]
-        spaced_rolls = [spaced_rolls[i] for i in selected_indices]
+            base_indices = [round(i * last_idx / (roll_cap - 1)) for i in range(roll_cap)]
+
+        def _cand_score(cand: tuple[int, int, int, int, float, float]) -> float:
+            cm_idx, _, _, _, _, c_prio = cand
+            is_turn, is_drop = _is_section_transition_bar(cm_idx, slots, plans, analysis)
+            span_s = cand[4]
+            return c_prio + 0.35 * min(1.0, span_s / 0.70) + (0.35 if is_drop else (0.15 if is_turn else 0.0)) + (0.20 if plans[cm_idx].gp_tremolo else 0.0)
+
+        used: set[int] = set()
+        selected_indices: list[int] = []
+        for pos_idx, anchor in enumerate(base_indices):
+            prev_bound = (selected_indices[-1] + 1) if selected_indices else 0
+            next_bound = (base_indices[pos_idx + 1] - 1) if pos_idx + 1 < len(base_indices) else last_idx
+            best_i = anchor
+            best_s = _cand_score(spaced_rolls[anchor])
+            for cand_i in range(max(prev_bound, anchor - 1), min(next_bound, anchor + 1) + 1):
+                if cand_i in used:
+                    continue
+                s = _cand_score(spaced_rolls[cand_i])
+                if s > best_s + 0.05:
+                    best_s = s
+                    best_i = cand_i
+            used.add(best_i)
+            selected_indices.append(best_i)
+        spaced_rolls = [spaced_rolls[i] for i in sorted(selected_indices)]
 
     fill_roll_types: dict[int, tuple[int, int, int]] = {}
     balloon_counts: list[int] = []
@@ -219,12 +315,13 @@ def build_ergonomic_measures_with_balloons(
             if e_cur is not None and e_next is not None and (e_next - e_cur) >= 0.15:
                 energy_jump = True
 
+        _, drops_to_chorus = _is_section_transition_bar(m_idx, slots, plans, analysis)
         is_climax_balloon = (
             balloons_used < max_balloons
-            and span_sec >= 0.50
-            and hit_count >= 6
-            and avg_prio >= 0.72
-            and (next_bar_crash or energy_jump)
+            and span_sec >= 0.45
+            and (hit_count >= 6 or plans[m_idx].gp_tremolo)
+            and avg_prio >= 0.70
+            and (next_bar_crash or energy_jump or drops_to_chorus or plans[m_idx].gp_tremolo)
         )
         if is_climax_balloon:
             roll_code = TaikoNote.BALLOON.value

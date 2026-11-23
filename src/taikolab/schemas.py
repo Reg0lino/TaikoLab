@@ -84,6 +84,22 @@ class EnergyPoint(BaseModel):
     guitar_rms: float = Field(default=0.0, ge=0.0)
 
 
+class GpSectionMarker(BaseModel):
+    bar_idx: int = Field(ge=0)
+    label: str
+    role: str = "unknown"
+    time_sec: float | None = Field(default=None, ge=0.0)
+
+
+class GpHints(BaseModel):
+    sections: list[GpSectionMarker] = Field(default_factory=list)
+    bar_meters: dict[int, tuple[int, int]] = Field(default_factory=dict)
+    accent_bars: list[int] = Field(default_factory=list)
+    tremolo_bars: list[int] = Field(default_factory=list)
+    palm_mute_bars: list[int] = Field(default_factory=list)
+    track_roles: list[str] = Field(default_factory=list)
+
+
 class SongAnalysis(BaseModel):
     schema_version: str = "1.0"
     song_id: str
@@ -98,6 +114,7 @@ class SongAnalysis(BaseModel):
     vocal_events: list[OnsetEvent] = Field(default_factory=list)
     guitar_events: list[OnsetEvent] = Field(default_factory=list)
     energy_curve: list[EnergyPoint] = Field(default_factory=list)
+    gp_hints: GpHints | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +192,13 @@ class ChartControlSettings(BaseModel):
     groove_triple_complexity: float | None = Field(default=None, ge=0.0, le=1.0)
     groove_triple_ramp: float | None = Field(default=None, ge=0.0, le=1.0)
     groove_triple_max_bpm: float | None = Field(default=None, ge=120.0, le=300.0)
+    section_phrase_variety: float | None = Field(default=None, ge=0.0, le=1.0)
+    auto_section_on_build: bool | None = None
+    enable_big_notes: bool | None = None
+    fold_blasts_to_rolls: bool | None = None
+    ride_cymbal_mode: Literal["accents_and_solo", "full_kat", "ignore"] | None = None
+    vocal_min_strength: float | None = Field(default=None, ge=0.1, le=0.95)
+    guitar_min_strength: float | None = Field(default=None, ge=0.1, le=0.95)
     difficulty_overrides: dict[DifficultyLevel, DifficultyRuleOverride] = Field(
         default_factory=dict
     )

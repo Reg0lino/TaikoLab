@@ -101,7 +101,10 @@ function ensureAudioCtx() {
     comp.ratio.value = 8;
     hitMasterGain = audioCtx.createGain();
     hitMasterGain.gain.value = parseFloat(document.getElementById("hitVol").value || "1.35");
-    hitMasterGain.connect(comp).connect(audioCtx.destination);
+    const hitLimiter = audioCtx.createDynamicsCompressor();
+    hitLimiter.threshold.value = -0.5;
+    hitLimiter.ratio.value = 20;
+    hitMasterGain.connect(hitLimiter).connect(audioCtx.destination);
     referenceMasterGain = audioCtx.createGain();
     referenceMasterGain.gain.value = parseFloat(document.getElementById("referenceVol").value || "0.8");
     referenceMasterGain.connect(comp).connect(audioCtx.destination);
@@ -122,7 +125,7 @@ function playTaikoSound(noteCode) {
     osc.type = "sine";
     osc.frequency.setValueAtTime(noteCode === 3 ? 130 : 150, now);
     osc.frequency.exponentialRampToValueAtTime(52, now + 0.065);
-    gain.gain.setValueAtTime(noteCode === 3 ? 0.72 : 0.55, now);
+    gain.gain.setValueAtTime(noteCode === 3 ? 0.95 : 0.80, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
     osc.connect(gain).connect(hitMasterGain);
     osc.start(now);
@@ -133,7 +136,7 @@ function playTaikoSound(noteCode) {
     osc.type = "triangle";
     osc.frequency.setValueAtTime(noteCode === 4 ? 1150 : 1380, now);
     osc.frequency.exponentialRampToValueAtTime(480, now + 0.035);
-    gain.gain.setValueAtTime(noteCode === 4 ? 0.58 : 0.44, now);
+    gain.gain.setValueAtTime(noteCode === 4 ? 0.85 : 0.70, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.048);
     osc.connect(gain).connect(hitMasterGain);
     osc.start(now);
@@ -601,6 +604,22 @@ function populateChartControls() {
   const rampPct = Math.round((ov.groove_triple_ramp ?? 0.50) * 100);
   document.getElementById("ctrlTripleRamp").value = String(rampPct);
   document.getElementById("lblCtrlTripleRamp").textContent = `${rampPct}%`;
+
+  const secVarPct = Math.round((ov.section_phrase_variety ?? 0.35) * 100);
+  document.getElementById("ctrlSectionVariety").value = String(secVarPct);
+  document.getElementById("lblCtrlSecVariety").textContent = `${secVarPct}%`;
+
+  const vocMin = ov.vocal_min_strength ?? 0.36;
+  document.getElementById("ctrlVocalMin").value = String(vocMin);
+  document.getElementById("lblCtrlVocalMin").textContent = Number(vocMin).toFixed(2);
+
+  const gtrMin = ov.guitar_min_strength ?? 0.58;
+  document.getElementById("ctrlGuitarMin").value = String(gtrMin);
+  document.getElementById("lblCtrlGuitarMin").textContent = Number(gtrMin).toFixed(2);
+
+  document.getElementById("ctrlRideMode").value = ov.ride_cymbal_mode || "accents_and_solo";
+  document.getElementById("ctrlEnableBigNotes").checked = ov.enable_big_notes !== false;
+  document.getElementById("ctrlFoldBlasts").checked = Boolean(ov.fold_blasts_to_rolls);
 }
 
 function applyChartControlsToOverrides() {
@@ -615,6 +634,22 @@ function applyChartControlsToOverrides() {
 
   if (!ov.fill_rolls_by_course) ov.fill_rolls_by_course = {};
   ov.fill_rolls_by_course[diff] = parseInt(document.getElementById("ctrlCourseRolls").value, 10);
+
+  if (!ov.groove_triple_density_by_course) ov.groove_triple_density_by_course = {};
+  ov.groove_triple_density_by_course[diff] = parseFloat(document.getElementById("ctrlCourseTriples").value) / 100.0;
+
+  if (!ov.groove_triple_complexity_by_course) ov.groove_triple_complexity_by_course = {};
+  if (diff !== "easy") {
+    ov.groove_triple_complexity_by_course[diff] = parseFloat(document.getElementById("ctrlTripleComp").value) / 100.0;
+  }
+  ov.groove_triple_max_bpm = parseFloat(document.getElementById("ctrlTripleMaxBpm").value);
+  ov.groove_triple_ramp = parseFloat(document.getElementById("ctrlTripleRamp").value) / 100.0;
+  ov.section_phrase_variety = parseFloat(document.getElementById("ctrlSectionVariety").value) / 100.0;
+  ov.vocal_min_strength = parseFloat(document.getElementById("ctrlVocalMin").value);
+  ov.guitar_min_strength = parseFloat(document.getElementById("ctrlGuitarMin").value);
+  ov.ride_cymbal_mode = document.getElementById("ctrlRideMode").value;
+  ov.enable_big_notes = document.getElementById("ctrlEnableBigNotes").checked;
+  ov.fold_blasts_to_rolls = document.getElementById("ctrlFoldBlasts").checked;
 
   if (!ov.difficulty_overrides) ov.difficulty_overrides = {};
   const existing = ov.difficulty_overrides[diff] || {};
@@ -1442,14 +1477,9 @@ async function loadSong(songId) {
   state.selectedSectionIdx = 0;
 
   const presetSelect = document.getElementById("presetSelect");
-  const songPreset = state.data.overrides.preset || "punk_gallop";
-  if (![...presetSelect.options].some((opt) => opt.value === songPreset)) {
-    const extra = document.createElement("option");
-    extra.value = songPreset;
-    extra.textContent = songPreset;
-    presetSelect.appendChild(extra);
+  if (presetSelect) {
+    presetSelect.value = state.data.overrides.preset || "taiko_auto";
   }
-  presetSelect.value = songPreset;
   document.getElementById("globalOffsetInput").value = state.data.overrides.global_offset_ms || 0;
   document.getElementById("tapLatencyInput").value = state.data.overrides.tap_latency_ms ?? -20;
 
@@ -3174,6 +3204,74 @@ bindSliderPair(
 );
 bindSliderPair("ctrlTripleMaxBpm", "lblCtrlTripleBpm", (v) => String(Math.round(v)), 235, "btnResetCtrlTripleBpm");
 bindSliderPair("ctrlTripleRamp", "lblCtrlTripleRamp", (v) => `${Math.round(v)}%`, 50, "btnResetCtrlTripleRamp");
+bindSliderPair("ctrlSectionVariety", "lblCtrlSecVariety", (v) => `${Math.round(v)}%`, 35, "btnResetCtrlSecVariety");
+bindSliderPair("ctrlVocalMin", "lblCtrlVocalMin", (v) => v.toFixed(2), 0.36, "btnResetCtrlVocalMin");
+bindSliderPair("ctrlGuitarMin", "lblCtrlGuitarMin", (v) => v.toFixed(2), 0.58, "btnResetCtrlGuitarMin");
+["ctrlRideMode", "ctrlEnableBigNotes", "ctrlFoldBlasts"].forEach((id) => {
+  document.getElementById(id).addEventListener("change", () => {
+    applyChartControlsToOverrides();
+    state.editSeq += 1;
+    rebuildChart(false);
+  });
+});
+
+let cachedSliderProfiles = {};
+async function refreshSliderProfiles() {
+  const res = await fetch("/api/slider-profiles");
+  if (!res.ok) return;
+  const { profiles } = await res.json();
+  cachedSliderProfiles = profiles || {};
+  const sel = document.getElementById("sliderProfileSelect");
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">-- Select Profile --</option>';
+  Object.keys(cachedSliderProfiles).sort().forEach((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  if (cachedSliderProfiles[prev]) sel.value = prev;
+}
+
+document.getElementById("sliderProfileSelect").addEventListener("change", (e) => {
+  const name = e.target.value;
+  if (!name || !cachedSliderProfiles[name] || !state.data) return;
+  Object.assign(state.data.overrides, cachedSliderProfiles[name]);
+  populateChartControls();
+  state.editSeq += 1;
+  rebuildChart(false);
+  showToast(`Applied slider profile '${name}'`);
+});
+
+document.getElementById("btnSaveSliderProfile").addEventListener("click", async () => {
+  if (!state.data) return;
+  const name = window.prompt("Name for this slider profile:");
+  if (!name || !name.trim()) return;
+  applyChartControlsToOverrides();
+  const payload = { ...state.data.overrides };
+  delete payload.sections;
+  delete payload.note_edits;
+  delete payload.custom_downbeats;
+  delete payload.barline_times;
+  const res = await fetch(`/api/slider-profiles/${encodeURIComponent(name.trim())}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (res.ok) {
+    await refreshSliderProfiles();
+    document.getElementById("sliderProfileSelect").value = name.trim();
+    showToast(`Saved profile '${name.trim()}'`);
+  }
+});
+
+document.getElementById("btnDeleteSliderProfile").addEventListener("click", async () => {
+  const name = document.getElementById("sliderProfileSelect").value;
+  if (!name) return;
+  await fetch(`/api/slider-profiles/${encodeURIComponent(name)}`, { method: "DELETE" });
+  await refreshSliderProfiles();
+  showToast(`Deleted profile '${name}'`);
+});
 
 ["ctrlQuietBehavior", "ctrlCourseFollow"].forEach((id) => {
   document.getElementById(id).addEventListener("change", () => {
@@ -4001,9 +4099,7 @@ async function loadSavedProject(projectId) {
   document.getElementById("laneZoom").value = String(project.lane_zoom || 340);
   if (project.overrides.preset) {
     const presetSel = document.getElementById("presetSelect");
-    if ([...presetSel.options].some((o) => o.value === project.overrides.preset)) {
-      presetSel.value = project.overrides.preset;
-    }
+    if (presetSel) presetSel.value = project.overrides.preset;
   }
   state.editSeq += 1;
   await rebuildChart(false);
@@ -4024,4 +4120,5 @@ document.getElementById("btnOpenProject").addEventListener("click", async () => 
   await refreshProjectList();
 });
 
+refreshSliderProfiles();
 init();

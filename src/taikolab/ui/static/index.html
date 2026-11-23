@@ -26,12 +26,7 @@
           <option value="mix">Full Mix</option>
         </select>
       </label>
-      <label>Profile
-        <select id="presetSelect">
-          <option value="punk_gallop">punk_gallop</option>
-          <option value="alt_rock">alt_rock</option>
-        </select>
-      </label>
+      <input type="hidden" id="presetSelect" value="taiko_auto" />
       <label>Course
         <select id="diffSelect">
           <option value="easy">Easy</option>
@@ -158,6 +153,51 @@
               <button type="button" class="btn-xs" id="btnResetCtrlTripleRamp">Reset</button>
             </div>
           </label>
+        </div>        <div class="ctrl-item">
+          <label>Section Phrase Variety (<span id="lblCtrlSecVariety">35%</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlSectionVariety" min="0" max="100" step="5" value="35" />
+              <button type="button" class="btn-xs" id="btnResetCtrlSecVariety">Reset</button>
+            </div>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Vocal Onset Threshold (<span id="lblCtrlVocalMin">0.36</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlVocalMin" min="0.15" max="0.85" step="0.03" value="0.36" />
+              <button type="button" class="btn-xs" id="btnResetCtrlVocalMin">Reset</button>
+            </div>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Guitar Onset Threshold (<span id="lblCtrlGuitarMin">0.58</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlGuitarMin" min="0.20" max="0.90" step="0.03" value="0.58" />
+              <button type="button" class="btn-xs" id="btnResetCtrlGuitarMin">Reset</button>
+            </div>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Ride Cymbal Mode
+            <select id="ctrlRideMode">
+              <option value="accents_and_solo">Solo &amp; Phrase Accents</option>
+              <option value="full_kat">Full Ride as Ka</option>
+              <option value="ignore">Ignore Ride</option>
+            </select>
+          </label>
+        </div>
+        <div class="ctrl-item checks-row">
+          <label class="inline-check"><input type="checkbox" id="ctrlEnableBigNotes" checked /> Big Notes</label>
+          <label class="inline-check"><input type="checkbox" id="ctrlFoldBlasts" /> Fold Blasts</label>
+        </div>
+        <div class="ctrl-item">
+          <label>Saved Slider Profile
+            <div class="ctrl-row">
+              <select id="sliderProfileSelect"><option value="">-- Select Profile --</option></select>
+              <button type="button" class="btn-xs" id="btnSaveSliderProfile">Save&hellip;</button>
+              <button type="button" class="btn-xs btn-danger" id="btnDeleteSliderProfile">Del</button>
+            </div>
+          </label>
         </div>
       </div>
     </section>
@@ -180,7 +220,7 @@
           <span id="lblReferenceVol">80%</span>
         </label>
         <label class="mixer-lbl">Music <input type="range" id="musicVol" min="0" max="1" step="0.05" value="0.55" /> <span id="lblMusicVol">55%</span></label>
-        <label class="mixer-lbl">Hits <input type="range" id="hitVol" min="0" max="2" step="0.05" value="1.35" /> <span id="lblHitVol">135%</span></label>
+        <label class="mixer-lbl">Hits <input type="range" id="hitVol" min="0" max="5" step="0.05" value="1.35" /> <span id="lblHitVol">135%</span></label>
         <label title="Slow playback to inspect timing. Playback speed does not alter chart timing.">Speed
           <select id="speedSelect">
             <option value="0.5">0.50x</option>

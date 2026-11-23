@@ -1,4 +1,4 @@
-"""Drum-driven Taiko mapping with tom-pitch shaping and solo/quiet cymbal rescue."""
+"""Drum-driven Taiko mapping with hands-over-feet streams, tom-pitch shaping and solo/quiet cymbal rescue."""
 
 from __future__ import annotations
 
@@ -80,11 +80,37 @@ def _nearest_time_distance(sorted_times: list[float], t: float) -> float:
     return best
 
 
+def _demote_stream_big_notes(
+    placed: dict[tuple[int, int], PlacedCandidate],
+) -> None:
+    """Hands Over Feet: in rapid 16th streams (Delta t <= 0.19s), demote Big Notes and let hands (snare/tom) win."""
+    by_measure: dict[int, list[tuple[int, PlacedCandidate]]] = {}
+    for (m_idx, s_idx), cand in placed.items():
+        by_measure.setdefault(m_idx, []).append((s_idx, cand))
+
+    for items in by_measure.values():
+        if len(items) < 3:
+            continue
+        items.sort(key=lambda pair: pair[0])
+        for idx, (s_idx, cand) in enumerate(items):
+            prev_close = (idx > 0) and (cand.time_sec - items[idx - 1][1].time_sec <= 0.19)
+            next_close = (idx + 1 < len(items)) and (items[idx + 1][1].time_sec - cand.time_sec <= 0.19)
+            if prev_close or next_close:
+                # Inside any rapid stream or fill: big notes are strictly forbidden
+                if cand.note_type == TaikoNote.BIG_DON:
+                    cand.note_type = TaikoNote.DON
+                elif cand.note_type == TaikoNote.BIG_KAT:
+                    cand.note_type = TaikoNote.KAT
+                # If this slot had snare or tom hands alongside a kick pedal, hands win!
+                if "snare" in cand.source or cand.pitch in (37, 38, 39, 40):
+                    cand.note_type = TaikoNote.KAT
+
+
 def _shape_drum_fills(
     placed: dict[tuple[int, int], PlacedCandidate],
     slots: list[MeasureSlot],
 ) -> None:
-    """Break up Don-heavy drum fills into natural Ka/Don Taiko sticking."""
+    """Break up Don-heavy drum fills into natural Ka/Don Taiko sticking, strictly favoring hands."""
     by_measure: dict[int, list[tuple[int, PlacedCandidate]]] = {}
     for (m_idx, s_idx), cand in placed.items():
         by_measure.setdefault(m_idx, []).append((s_idx, cand))
@@ -112,6 +138,21 @@ def _shape_drum_fills(
             late_or_dense = cluster[-1][0] >= int(grid_size * 0.5) or len(cluster) >= 6
             if not (has_fill_voice and late_or_dense):
                 continue
+
+            # Strip any big notes inside the fill cluster
+            for _, cand in cluster:
+                if cand.note_type == TaikoNote.BIG_DON:
+                    cand.note_type = TaikoNote.DON
+                elif cand.note_type == TaikoNote.BIG_KAT:
+                    cand.note_type = TaikoNote.KAT
+
+            # Hands Over Feet: In any dense 16th stream (>=4 hits), hands (snare/tom) strictly override foot kicks!
+            for s_idx, cand in cluster:
+                if cand.source in ("drum:snare", "drum:slam"):
+                    cand.note_type = TaikoNote.KAT
+                    cand.source = "drum:snare"
+                elif cand.note_type in (TaikoNote.BIG_DON, TaikoNote.BIG_KAT):
+                    cand.note_type = TaikoNote.DON if cand.note_type == TaikoNote.BIG_DON else TaikoNote.KAT
 
             don_streak = 0
             for idx_in_cluster, (s_idx, cand) in enumerate(cluster):
@@ -174,6 +215,8 @@ def _rescue_solo_and_quiet_cymbals(
         plan = plans[m_idx]
         if plan.follow_mode in ("vocals", "guitar", "vocals_guitar") or plan.difficulty == "easy" or plan.low_energy_guitar:
             continue
+        if hit.drum_class == "ride" and plan.ride_cymbal_mode == "ignore":
+            continue
 
         eff_vel = min(1.0, hit.velocity * plan.drum_sensitivity)
         key = (m_idx, s_idx)
@@ -185,7 +228,6 @@ def _rescue_solo_and_quiet_cymbals(
         beat_step = max(1, slots[m_idx].grid_size // max(1, slots[m_idx].numerator))
 
         if bar_cores <= 2:
-            # Quiet time-keeping hi-hat/ride section
             if eff_vel < 0.42 or dist < _QUIET_CYMBAL_CLEARANCE_SEC:
                 continue
             if plan.difficulty == "normal" and (s_idx % beat_step) != 0:
@@ -201,7 +243,6 @@ def _rescue_solo_and_quiet_cymbals(
             )
             continue
 
-        # Active bar: only place truly solo cymbals (>=170ms away from any kick/snare/tom/crash)
         if dist < _SOLO_CYMBAL_CLEARANCE_SEC:
             continue
         is_open_hat_or_ride = hit.drum_class == "ride" or hit.pitch == 46
@@ -229,7 +270,7 @@ def map_drum_hits(
     plans: list[MeasurePlan],
     cfg: AppConfig,
 ) -> dict[tuple[int, int], PlacedCandidate]:
-    """Map DrumHits onto quantized cells with tom-pitch, fill-sticking, and solo cymbal intelligence."""
+    """Map DrumHits onto cells with Hands-Over-Feet fills, tom-pitch, and solo cymbal intelligence."""
     placed: dict[tuple[int, int], PlacedCandidate] = {}
     ignored_cymbals: list[DrumHit] = []
     core_times: list[float] = []
@@ -252,7 +293,8 @@ def map_drum_hits(
             continue
 
         target = _effective_drum_target(hit, cfg)
-        note = _target_to_note(target, eff_vel, cfg, plan.enable_big_notes)
+        eff_vel_big = eff_vel + (0.12 if (plan.gp_accent and (s_idx % max(1, slots[m_idx].grid_size // 4)) == 0) else 0.0)
+        note = _target_to_note(target, min(1.0, eff_vel_big), cfg, plan.enable_big_notes)
         if note == TaikoNote.REST:
             continue
 
@@ -273,31 +315,36 @@ def map_drum_hits(
             )
         else:
             pair = {existing.source, f"drum:{hit.drum_class}"}
-            if plan.enable_big_notes and "drum:kick" in pair and ("drum:crash" in pair or "drum:snare" in pair):
-                is_strong_beat = (s_idx % max(1, slots[m_idx].grid_size // 4)) == 0
-                if "drum:crash" in pair and (hit.velocity >= cfg.preset.big_note_threshold or existing.priority >= 0.85):
-                    existing.note_type = TaikoNote.BIG_KAT
-                    existing.priority = max(existing.priority, prio) + 0.15
-                    existing.source = "drum:slam"
-                    continue
-                if "drum:snare" in pair and is_strong_beat and (hit.velocity >= cfg.preset.big_note_threshold or existing.priority >= 0.85):
+            # Measure downbeat (s_idx == 0): Kick + Crash / Snare favors Big Don
+            if s_idx == 0 and plan.enable_big_notes and "drum:kick" in pair and ("drum:crash" in pair or "drum:snare" in pair):
+                if hit.velocity >= cfg.preset.big_note_threshold or existing.priority >= 0.85:
                     existing.note_type = TaikoNote.BIG_DON
                     existing.priority = max(existing.priority, prio) + 0.15
                     existing.source = "drum:slam"
                     continue
 
-            if existing.source == "drum:tom" and hit.drum_class == "kick" and s_idx > 0:
+            # Measure backbeat slams on strong quarter beats
+            if s_idx > 0 and plan.enable_big_notes and "drum:kick" in pair and "drum:snare" in pair:
+                is_strong_beat = (s_idx % max(1, slots[m_idx].grid_size // 4)) == 0
+                if is_strong_beat and (hit.velocity >= cfg.preset.big_note_threshold or existing.priority >= 0.85):
+                    existing.note_type = TaikoNote.BIG_DON
+                    existing.priority = max(existing.priority, prio) + 0.15
+                    existing.source = "drum:slam"
+                    continue
+
+            if s_idx > 0 and "drum:kick" in pair and "drum:tom" in pair:
+                tom_hit = hit if hit.drum_class == "tom" else None
+                tom_target = _effective_drum_target(tom_hit, cfg) if tom_hit else "kat"
+                existing.note_type = TaikoNote.KAT if tom_target == "kat" else TaikoNote.DON
+                existing.priority = max(existing.priority, prio)
+                existing.source = "drum:tom"
                 continue
-            if existing.source == "drum:kick" and hit.drum_class == "tom" and s_idx > 0:
-                placed[key] = PlacedCandidate(
-                    measure_idx=m_idx,
-                    slot_idx=s_idx,
-                    time_sec=hit.time_sec,
-                    note_type=note,
-                    priority=max(prio, existing.priority + 0.01),
-                    source=f"drum:{hit.drum_class}",
-                    pitch=hit.pitch,
-                )
+
+            if s_idx == 0 and "drum:kick" in pair:
+                if existing.source != "drum:kick":
+                    existing.note_type = TaikoNote.BIG_DON if (plan.enable_big_notes and note in (TaikoNote.BIG_DON, TaikoNote.BIG_KAT)) else TaikoNote.DON
+                    existing.source = "drum:kick"
+                    existing.priority = max(existing.priority, prio)
                 continue
 
             if prio > existing.priority:
@@ -315,4 +362,5 @@ def map_drum_hits(
     _rescue_solo_and_quiet_cymbals(placed, ignored_cymbals, core_times, slots, plans, cfg)
     _shape_drum_fills(placed, slots)
     _balance_don_heavy_tom_grooves(placed)
+    _demote_stream_big_notes(placed)
     return placed

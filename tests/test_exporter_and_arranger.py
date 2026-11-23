@@ -869,7 +869,7 @@ def test_high_tom_and_mixed_fill_shape_produces_kas_not_all_dons():
     fill_notes = hard.measures[0].notes[8:]
     assert TaikoNote.KAT.value in fill_notes
     assert TaikoNote.DON.value in fill_notes
-    assert hard.measures[1].notes[0] == TaikoNote.BIG_KAT.value
+    assert hard.measures[1].notes[0] == TaikoNote.BIG_DON.value
 
 
 def test_mixed_snare_tom_fill_triggers_climax_balloon_before_crash():

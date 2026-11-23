@@ -288,7 +288,16 @@ def _try_apply_pocket(
     def is_big(slot16: int) -> bool:
         return notes[idx(slot16)] in (_BIG_DON, _BIG_KAT)
 
-    kind, s = pockets[variant_seed % len(pockets)]
+    clean_pockets = [p for p in pockets if not is_big(p[1]) and not is_big(p[1] + 4)]
+    active_pockets = clean_pockets or pockets
+    kind, s = active_pockets[variant_seed % len(active_pockets)]
+
+    def _demote_big(slot16: int) -> None:
+        val = notes[idx(slot16)]
+        if val == _BIG_DON:
+            notes[idx(slot16)] = _DON
+        elif val == _BIG_KAT:
+            notes[idx(slot16)] = _KAT
 
     def apply_pocket(p_kind: str, p_start: int, seed: int) -> bool:
         anchor_note = notes[idx(p_start)]
@@ -300,14 +309,16 @@ def _try_apply_pocket(
             else:
                 pool = fwd_pool
             t0, t1, t2, end_c = pool[seed % len(pool)]
-            if not is_big(p_start):
-                notes[idx(p_start)] = t0
+            notes[idx(p_start)] = base_color if p_start == 0 else t0
             notes[idx(p_start + 1)] = t1
             notes[idx(p_start + 2)] = t2
             if notes[idx(p_start + 4)] == 0:
-                notes[idx(p_start + 4)] = end_c if end_c is not None else (_KAT if t0 == _DON else _DON)
-            elif end_c is not None and not is_big(p_start + 4):
+                notes[idx(p_start + 4)] = end_c if end_c is not None else (_KAT if notes[idx(p_start)] == _DON else _DON)
+            elif end_c is not None:
                 notes[idx(p_start + 4)] = end_c
+            else:
+                _demote_big(p_start + 4)
+            _demote_big(p_start)
             return True
 
         if p_kind == "open_rev":
@@ -317,12 +328,13 @@ def _try_apply_pocket(
             else:
                 pool = rev_pool
             t0, t1, t2 = pool[seed % len(pool)]
-            if not is_big(p_start) and p_start != 0:
+            if p_start != 0:
                 notes[idx(p_start)] = _KAT if t0 == _DON else _DON
+            else:
+                _demote_big(p_start)
             notes[idx(p_start + 2)] = t0
             notes[idx(p_start + 3)] = t1
-            if not is_big(p_start + 4):
-                notes[idx(p_start + 4)] = t2
+            notes[idx(p_start + 4)] = t2
             return True
 
         return False

@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
-from taikolab.schemas import ChartControlSettings, DrumClass, FollowMode, TaikoTarget
+from taikolab.schemas import ChartControlSettings, DrumClass, FollowMode, SongOverrides, TaikoTarget
 
 
 class GlobalSettings(BaseModel):
@@ -131,9 +131,13 @@ def save_wizard_preferences(
     *,
     last_audio_directory: str | None = None,
     last_midi_directory: str | None = None,
+    last_gp_directory: str | None = None,
     chart_controls: dict[str, object] | None = None,
     use_demucs_stems: bool | None = None,
     append_version_tag: bool | None = None,
+    ingest_mode: str | None = None,
+    demucs_model: str | None = None,
+    slider_profiles: dict[str, dict[str, object]] | None = None,
 ) -> Path:
     """Persist desktop-only settings without rewriting the commented YAML config."""
     prefs_path = root_dir / "configs" / "wizard_settings.json"
@@ -145,6 +149,8 @@ def save_wizard_preferences(
         preferences["last_audio_directory"] = last_audio_directory
     if last_midi_directory is not None:
         preferences["last_midi_directory"] = last_midi_directory
+    if last_gp_directory is not None:
+        preferences["last_gp_directory"] = last_gp_directory
     if chart_controls is not None:
         controls = ChartControlSettings.model_validate(chart_controls)
         preferences["chart_controls"] = controls.model_dump(exclude_none=True)
@@ -152,6 +158,12 @@ def save_wizard_preferences(
         preferences["use_demucs_stems"] = bool(use_demucs_stems)
     if append_version_tag is not None:
         preferences["append_version_tag"] = bool(append_version_tag)
+    if ingest_mode is not None:
+        preferences["ingest_mode"] = ingest_mode
+    if demucs_model is not None:
+        preferences["demucs_model"] = demucs_model
+    if slider_profiles is not None:
+        preferences["slider_profiles"] = slider_profiles
 
     temp_path = prefs_path.with_suffix(".json.tmp")
     temp_path.write_text(json.dumps(preferences, indent=2) + "\n", encoding="utf-8")
@@ -182,3 +194,27 @@ def load_config(preset_name: str | None = None, root_dir: Path | None = None) ->
         hori=hori,
         preset=preset,
     )
+
+def apply_chart_controls_to_config(cfg: AppConfig, overrides: SongOverrides | None) -> AppConfig:
+    """Apply slider/toggle overrides onto AppConfig cleanly (without requiring YAML preset edits)."""
+    if overrides is None:
+        return cfg
+    if overrides.target_highway_speed is not None:
+        cfg.settings.target_highway_speed = overrides.target_highway_speed
+    if overrides.quiet_guitar_rms_threshold is not None:
+        cfg.settings.quiet_guitar_rms_threshold = overrides.quiet_guitar_rms_threshold
+    if overrides.big_note_threshold is not None:
+        cfg.preset.big_note_threshold = overrides.big_note_threshold
+    if overrides.enable_big_notes is not None:
+        cfg.preset.enable_big_notes = overrides.enable_big_notes
+    if overrides.fold_blasts_to_rolls is not None:
+        cfg.preset.fold_blasts_to_rolls = overrides.fold_blasts_to_rolls
+    if overrides.vocal_min_strength is not None:
+        cfg.preset.vocal_min_strength = overrides.vocal_min_strength
+    if overrides.guitar_min_strength is not None:
+        cfg.preset.guitar_min_strength = overrides.guitar_min_strength
+    if overrides.ride_cymbal_mode == "full_kat":
+        cfg.preset.drum_mapping["ride"] = "kat"
+    elif overrides.ride_cymbal_mode in ("accents_and_solo", "ignore"):
+        cfg.preset.drum_mapping["ride"] = "ignore"
+    return cfg

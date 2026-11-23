@@ -56,10 +56,22 @@ def normalize_songs_directory(selected_path: Path) -> Path:
     )
 
 
+_GP_EXTENSIONS = {".gp", ".gp5", ".gpx", ".gp4", ".gp3"}
+
+
+def find_staged_gp_input(song_dir: Path) -> Path | None:
+    for ext in (".gp", ".gpx", ".gp5", ".gp4", ".gp3"):
+        cand = song_dir / f"input{ext}"
+        if cand.is_file():
+            return cand
+    return None
+
+
 def stage_song_inputs(
     song_dir: Path,
     audio_source: Path,
     midi_source: Path | None,
+    gp_source: Path | None = None,
 ) -> tuple[Path, Path | None]:
     """Copy chosen source files into one new song folder using standard filenames."""
     if song_dir.exists():
@@ -79,12 +91,21 @@ def stage_song_inputs(
         if not midi_source.is_file():
             raise FileNotFoundError(f"MIDI file not found: {midi_source}")
 
+    if gp_source is not None:
+        gp_source = gp_source.expanduser().resolve(strict=True)
+        if gp_source.suffix.lower() not in _GP_EXTENSIONS:
+            raise ValueError("Choose a Guitar Pro file (.gp, .gpx, .gp5).")
+        if not gp_source.is_file():
+            raise FileNotFoundError(f"Guitar Pro file not found: {gp_source}")
+
     song_dir.mkdir(parents=True)
     audio_path = song_dir / f"audio{audio_ext}"
     shutil.copy2(audio_source, audio_path)
     if midi_source is not None:
         midi_path = song_dir / "input.mid"
         shutil.copy2(midi_source, midi_path)
+    if gp_source is not None:
+        shutil.copy2(gp_source, song_dir / f"input{gp_source.suffix.lower()}")
     return audio_path, midi_path
 
 
@@ -100,6 +121,7 @@ def write_build_manifest(
     metadata_source: str,
     status: str,
     error: str | None = None,
+    gp_source: Path | None = None,
 ) -> Path:
     """Record non-secret inputs and build state beside the generated chart."""
     manifest = {
@@ -111,7 +133,8 @@ def write_build_manifest(
         "metadata_source": metadata_source,
         "audio_source_name": audio_source.name,
         "midi_source_name": midi_source.name if midi_source else None,
-        "gp_supported": False,
+        "gp_source_name": gp_source.name if gp_source else None,
+        "gp_supported": bool(gp_source),
         "status": status,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
