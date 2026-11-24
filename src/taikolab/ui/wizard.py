@@ -268,6 +268,13 @@ class TaikoWizard:
                 else _DEFAULT_GROOVE_TRIPLE_MAX_BPM
             )
         )
+        self.groove_triple_max_hits = tk.DoubleVar(
+            value=(
+                chart_controls.groove_triple_max_hits
+                if chart_controls.groove_triple_max_hits is not None
+                else 6
+            )
+        )
         self.section_phrase_variety = tk.DoubleVar(
             value=(
                 chart_controls.section_phrase_variety * 100.0
@@ -748,6 +755,17 @@ class TaikoWizard:
             )
         self._add_slider(
             controls,
+            40,
+            "Groove triple max hits/bar (dense beats)",
+            self.groove_triple_max_hits,
+            4,
+            10,
+            1,
+            "{:.0f}",
+            default_value=6,
+        )
+        self._add_slider(
+            controls,
             34,
             "Section phrase variety (stem rotation)",
             self.section_phrase_variety,
@@ -1179,7 +1197,9 @@ class TaikoWizard:
             variant += 1
 
         workspace_exists = (workspace_dir / base_id).exists()
-        simulator_exists = (songs_dir / base_id).exists()
+        from taikolab.exporters.tja_writer import resolve_opentaiko_box_dir
+        _box_dir = resolve_opentaiko_box_dir(str(songs_dir))
+        simulator_exists = (songs_dir / base_id).exists() or (_box_dir is not None and (_box_dir / base_id).exists())
         if not workspace_exists and not simulator_exists:
             return base_id, False, self.append_version_tag.get()
 
@@ -1277,6 +1297,7 @@ class TaikoWizard:
         if c.guitar_min_strength is not None: self.guitar_min_strength.set(c.guitar_min_strength)
         if c.cymbal_sensitivity is not None: self.cymbal_sensitivity.set(c.cymbal_sensitivity * 100.0)
         if c.groove_triple_max_bpm is not None: self.groove_triple_max_bpm.set(c.groove_triple_max_bpm)
+        if c.groove_triple_max_hits is not None: self.groove_triple_max_hits.set(c.groove_triple_max_hits)
         if c.groove_triple_ramp is not None: self.groove_triple_ramp.set(c.groove_triple_ramp * 100.0)
         for d, cap in c.fill_rolls_by_course.items():
             if d in self.fill_roll_caps: self.fill_roll_caps[d].set(cap)
@@ -1354,6 +1375,11 @@ class TaikoWizard:
                 float(self.groove_triple_ramp.get()) / 100.0
                 if hasattr(self, "groove_triple_ramp")
                 else None
+            ),
+            groove_triple_max_hits=(
+                round(self.groove_triple_max_hits.get())
+                if hasattr(self, "groove_triple_max_hits")
+                else 6
             ),
             groove_triple_max_bpm=(
                 float(self.groove_triple_max_bpm.get())
@@ -1499,7 +1525,10 @@ class TaikoWizard:
                 shutil.move(str(song_dir), str(backup_path))
                 self.events.put(("log", f"Existing workspace folder backed up to {backup_path}"))
 
-            existing_simulator_dir = songs_dir / song_id
+            from taikolab.exporters.tja_writer import resolve_opentaiko_box_dir
+            _box_root = resolve_opentaiko_box_dir(str(songs_dir))
+            _sim_candidates = [d for d in (_box_root / song_id if _box_root else None, songs_dir / song_id) if d and d.is_dir()]
+            existing_simulator_dir = _sim_candidates[0] if _sim_candidates else (songs_dir / song_id)
             if replace_existing and existing_simulator_dir.is_dir():
                 conflicts = [
                     existing_simulator_dir / f"{song_id}.tja",
@@ -1780,6 +1809,21 @@ class TaikoWizard:
         if self.editor_server.url is None:
             messagebox.showerror("Could not open chart", "The local editor server is not running.")
             return
+        if not getattr(self.editor_server, "last_import_has_audio", True):
+            if messagebox.askyesno(
+                "Attach audio to TJA",
+                f"No audio file was found beside {path.name}.\n\nSelect the audio file (.mp3/.ogg/.wav/.flac) to play with this chart?",
+            ):
+                audio_sel = filedialog.askopenfilename(
+                    title="Choose audio file for this TJA chart",
+                    initialdir=str(path.parent),
+                    filetypes=[("Supported audio", "*.ogg *.wav *.mp3 *.flac"), ("All files", "*.*")],
+                )
+                if audio_sel:
+                    try:
+                        self.editor_server.attach_tja_audio(import_id, Path(audio_sel))
+                    except Exception as exc:
+                        messagebox.showerror("Could not attach audio", str(exc))
         if self.editor_title_label is not None:
             self.editor_title_label.configure(text=f"Manual Chart Editor — {path.stem}")
         self.editor_webview.navigate(

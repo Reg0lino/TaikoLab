@@ -425,6 +425,27 @@ def build_base_and_warped_slots(
     """Return unwarped base slots and final slots after section shifts and barline warps."""
     base = _build_unwarped_measure_slots(analysis, overrides)
     base = _apply_section_bpm_rules(base, overrides)
+    ht_run: list[int] = []
+    def _flush_ht_run() -> None:
+        if not ht_run:
+            return
+        dense_bars = sum(
+            1 for idx in ht_run
+            if sum(1 for h in analysis.drum_hits if base[idx].start_sec <= h.time_sec < base[idx].end_sec and h.drum_class not in ("hihat", "ride")) >= 8
+        )
+        if dense_bars >= max(1, (len(ht_run) + 3) // 4) and (dense_bars / len(ht_run)) >= 0.25:
+            for idx in ht_run:
+                base[idx].grid_size = 32
+        ht_run.clear()
+
+    for idx, slot in enumerate(base):
+        if slot.numerator == 4 and slot.denominator == 4 and slot.grid_size == 16 and 105.0 <= slot.bpm < 135.0:
+            if ht_run and abs(slot.bpm - base[ht_run[-1]].bpm) > 12.0:
+                _flush_ht_run()
+            ht_run.append(idx)
+        else:
+            _flush_ht_run()
+    _flush_ht_run()
     warped = _apply_section_shifts_to_slots(base, overrides)
     warped = _apply_barline_times_to_slots(warped, overrides)
     return base, warped

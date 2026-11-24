@@ -83,8 +83,11 @@ def render_course_tja(
 
     clean_grids = _sanitize_measures_rolls(course.measures)
 
+    first_mult = course.measures[0].scroll if course.measures else 1.0
     active_scroll = (
-        round(target_highway_speed / initial_bpm, 3) if normalize_scroll else base_scroll
+        round(max(0.05, min(10.0, (target_highway_speed * first_mult) / initial_bpm)), 3)
+        if normalize_scroll
+        else round(max(0.05, min(10.0, base_scroll * first_mult)), 3)
     )
     lines.append(f"#SCROLL {active_scroll:.3f}")
 
@@ -123,11 +126,14 @@ def render_course_tja(
             active_bpm = round(bar_bpm, 3)
             lines.append(f"#BPMCHANGE {active_bpm:.3f}")
 
-        if normalize_scroll:
-            normalized_scroll = round(target_highway_speed / active_bpm, 3)
-            if normalized_scroll != round(active_scroll, 3):
-                active_scroll = normalized_scroll
-                lines.append(f"#SCROLL {active_scroll:.3f}")
+        desired_scroll = (
+            round(max(0.05, min(10.0, (target_highway_speed * m.scroll) / active_bpm)), 3)
+            if normalize_scroll
+            else round(max(0.05, min(10.0, base_scroll * m.scroll)), 3)
+        )
+        if desired_scroll != round(active_scroll, 3):
+            active_scroll = desired_scroll
+            lines.append(f"#SCROLL {active_scroll:.3f}")
 
         sim_clock += measure_duration_sec(active_num, active_den, active_bpm)
 
@@ -206,16 +212,46 @@ def write_tja_file(
     return output_path
 
 
+AUTOCONTAINER_FOLDER = "00 _TaikoLab AutoCharts"
+DEFAULT_BOX_DEF = """#TITLE:TaikoLab AutoCharts
+#GENRE:TaikoLab AutoCharts
+
+#BOXEXPLANATION1:Automatically generated
+#BOXEXPLANATION2:and custom-edited charts
+#BOXEXPLANATION3:created with TaikoLab!
+
+#BOXTYPE:16
+#BGTYPE:6
+#BOXCOLOR:#a9ffa6
+#BACKCOLOR:#074700
+#DEFAULTPREIMAGE:default.png
+#SCENEPRESET:Clouds
+"""
+
+
+def resolve_opentaiko_box_dir(opentaiko_songs_dir: str) -> Path | None:
+    if not opentaiko_songs_dir.strip():
+        return None
+    dest_root = Path(opentaiko_songs_dir)
+    if dest_root.name.casefold() == AUTOCONTAINER_FOLDER.casefold():
+        return dest_root
+    return dest_root / AUTOCONTAINER_FOLDER
+
+
 def export_to_opentaiko(
     tja_path: Path,
     audio_path: Path | None,
     opentaiko_songs_dir: str,
     folder_name: str | None = None,
 ) -> Path | None:
-    if not opentaiko_songs_dir.strip():
+    box_root = resolve_opentaiko_box_dir(opentaiko_songs_dir)
+    if box_root is None:
         return None
-    dest_root = Path(opentaiko_songs_dir)
-    dest_dir = dest_root / (folder_name or tja_path.stem)
+    box_root.mkdir(parents=True, exist_ok=True)
+    box_def = box_root / "box.def"
+    if not box_def.exists():
+        box_def.write_text(DEFAULT_BOX_DEF, encoding="utf-8")
+    dest_dir = box_root / (folder_name or tja_path.stem)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_tja = dest_dir / tja_path.name
     shutil.copy2(tja_path, dest_tja)

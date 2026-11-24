@@ -1,12 +1,12 @@
-"""Vocal cadence & hook-driven mapping with balanced drum pocket support."""
+"""Vocal cadence & hook-driven mapping with pitch-contour phrasing and sub-bar section lookup."""
 
 from __future__ import annotations
 
 from taikolab.arranger.mapper_drums import PlacedCandidate
 from taikolab.arranger.quantizer import MeasureSlot, time_to_measure_slot
-from taikolab.arranger.section_builder import MeasurePlan
+from taikolab.arranger.section_builder import MeasurePlan, resolve_follow_mode_at_time
 from taikolab.config import AppConfig
-from taikolab.schemas import DrumHit, OnsetEvent, TaikoNote
+from taikolab.schemas import DrumHit, OnsetEvent, SongOverrides, TaikoNote
 
 
 def map_vocal_cadence(
@@ -15,12 +15,15 @@ def map_vocal_cadence(
     slots: list[MeasureSlot],
     plans: list[MeasurePlan],
     cfg: AppConfig,
+    overrides: SongOverrides | None = None,
 ) -> dict[tuple[int, int], PlacedCandidate]:
-    """Map vocal phrasing with natural Don/Kat cadence + kick/snare pocket anchors."""
+    """Map vocal phrasing with melodic Don/Kat contour + sparse drum pocket anchors."""
     placed: dict[tuple[int, int], PlacedCandidate] = {}
 
     phrase_toggle = False
     last_time = -10.0
+    last_pitch: float | None = None
+    vocal_count_by_bar: dict[int, int] = {}
 
     for ev in sorted(vocal_events, key=lambda e: e.time_sec):
         loc = time_to_measure_slot(ev.time_sec, slots)
@@ -28,7 +31,8 @@ def map_vocal_cadence(
             continue
         m_idx, s_idx = loc
         plan = plans[m_idx]
-        if plan.follow_mode not in ("vocals", "vocals_guitar"):
+        eff_mode = resolve_follow_mode_at_time(ev.time_sec, plan, overrides)
+        if eff_mode not in ("vocals", "vocals_guitar"):
             continue
         if plan.low_energy_guitar:
             continue
@@ -37,11 +41,15 @@ def map_vocal_cadence(
         if eff_str < cfg.preset.vocal_min_strength:
             continue
 
-        if ev.time_sec - last_time > 0.6:
+        if ev.time_sec - last_time > 0.55:
             phrase_toggle = False
+        elif ev.pitch_hz is not None and last_pitch is not None and abs(ev.pitch_hz - last_pitch) >= 12.0:
+            phrase_toggle = ev.pitch_hz > last_pitch
         else:
             phrase_toggle = not phrase_toggle
         last_time = ev.time_sec
+        if ev.pitch_hz is not None:
+            last_pitch = ev.pitch_hz
 
         if plan.enable_big_notes and eff_str >= cfg.preset.big_note_threshold:
             note = TaikoNote.BIG_DON if s_idx == 0 else TaikoNote.BIG_KAT
@@ -50,6 +58,8 @@ def map_vocal_cadence(
 
         key = (m_idx, s_idx)
         if key not in placed or eff_str > placed[key].priority:
+            if key not in placed:
+                vocal_count_by_bar[m_idx] = vocal_count_by_bar.get(m_idx, 0) + 1
             placed[key] = PlacedCandidate(
                 measure_idx=m_idx,
                 slot_idx=s_idx,
@@ -60,16 +70,19 @@ def map_vocal_cadence(
             )
 
     for hit in drum_hits:
-        if hit.drum_class not in ("kick", "snare", "crash") or hit.velocity < 0.62:
+        if hit.drum_class not in ("kick", "snare", "crash") or hit.velocity < 0.65:
             continue
         loc = time_to_measure_slot(hit.time_sec, slots)
         if loc is None:
             continue
         m_idx, s_idx = loc
-        if plans[m_idx].follow_mode != "vocals":
+        if resolve_follow_mode_at_time(hit.time_sec, plans[m_idx], overrides) != "vocals":
+            continue
+        if vocal_count_by_bar.get(m_idx, 0) > 2:
             continue
         key = (m_idx, s_idx)
-        if key not in placed and s_idx % 4 == 0:
+        beat_step = max(1, slots[m_idx].grid_size // max(1, slots[m_idx].numerator))
+        if key not in placed and (s_idx % beat_step) == 0:
             note = TaikoNote.DON if hit.drum_class == "kick" else TaikoNote.KAT
             placed[key] = PlacedCandidate(
                 measure_idx=m_idx,
@@ -89,6 +102,7 @@ def weave_hybrid_vocal_hooks(
     slots: list[MeasureSlot],
     plans: list[MeasurePlan],
     cfg: AppConfig,
+    overrides: SongOverrides | None = None,
 ) -> dict[tuple[int, int], PlacedCandidate]:
     """Add standout vocal phrase entries into open drum pockets in hybrid mode."""
     merged = dict(placed)
@@ -100,10 +114,11 @@ def weave_hybrid_vocal_hooks(
             continue
         m_idx, s_idx = loc
         plan = plans[m_idx]
-        if plan.follow_mode not in ("hybrid", "drums_vocals", "all_balanced") or plan.low_energy_guitar:
+        eff_mode = resolve_follow_mode_at_time(ev.time_sec, plan, overrides)
+        if eff_mode not in ("hybrid", "drums_vocals", "all_balanced") or plan.low_energy_guitar:
             continue
 
-        explicit_vocals = plan.follow_mode in ("drums_vocals", "all_balanced")
+        explicit_vocals = eff_mode in ("drums_vocals", "all_balanced")
         eff_str = min(1.0, ev.strength * plan.vocal_sensitivity)
         min_str = max(0.42, cfg.preset.vocal_min_strength) if explicit_vocals else max(0.68, cfg.preset.vocal_min_strength + 0.25)
         if eff_str < min_str:

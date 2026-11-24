@@ -43,6 +43,7 @@ let state = {
   clipboard: null,
   sourceTjaPath: null,
   activeProjectName: "",
+  activeProjectId: null,
   markInSec: null,
   markOutSec: null,
   gridAnchorIdx: null,
@@ -604,6 +605,9 @@ function populateChartControls() {
   const rampPct = Math.round((ov.groove_triple_ramp ?? 0.50) * 100);
   document.getElementById("ctrlTripleRamp").value = String(rampPct);
   document.getElementById("lblCtrlTripleRamp").textContent = `${rampPct}%`;
+  const maxHits = Math.round(ov.groove_triple_max_hits ?? 6);
+  document.getElementById("ctrlTripleMaxHits").value = String(maxHits);
+  document.getElementById("lblCtrlTripleMaxHits").textContent = String(maxHits);
 
   const secVarPct = Math.round((ov.section_phrase_variety ?? 0.35) * 100);
   document.getElementById("ctrlSectionVariety").value = String(secVarPct);
@@ -647,6 +651,7 @@ function applyChartControlsToOverrides() {
   }
   ov.groove_triple_max_bpm = parseFloat(document.getElementById("ctrlTripleMaxBpm").value);
   ov.groove_triple_ramp = parseFloat(document.getElementById("ctrlTripleRamp").value) / 100.0;
+  ov.groove_triple_max_hits = parseInt(document.getElementById("ctrlTripleMaxHits").value, 10);
   ov.section_phrase_variety = parseFloat(document.getElementById("ctrlSectionVariety").value) / 100.0;
   ov.vocal_min_strength = parseFloat(document.getElementById("ctrlVocalMin").value);
   ov.guitar_min_strength = parseFloat(document.getElementById("ctrlGuitarMin").value);
@@ -986,12 +991,15 @@ function selectSection(idx) {
 }
 
 function snapTimeToBarline(timeSec, minSec, maxSec) {
+  const clamped = Math.max(minSec, Math.min(maxSec, timeSec));
+  const snapOn = document.getElementById("chkSnapSections")?.checked;
+  if (!snapOn) {
+    return clamped;
+  }
   const course = getActiveCourse();
   const barlines = getBaseBarlinesForCourse(course);
   const candidates = barlines.filter((t) => t > minSec + 0.05 && t < maxSec - 0.05);
-  if (candidates.length === 0) {
-    return Math.max(minSec, Math.min(maxSec, timeSec));
-  }
+  if (candidates.length === 0) return clamped;
   let best = candidates[0];
   let bestDist = Math.abs(best - timeSec);
   for (const t of candidates) {
@@ -1001,7 +1009,7 @@ function snapTimeToBarline(timeSec, minSec, maxSec) {
       bestDist = d;
     }
   }
-  return bestDist <= 2.0 ? best : Math.max(minSec, Math.min(maxSec, timeSec));
+  return bestDist <= 2.0 ? best : clamped;
 }
 
 function carveSectionRange(startSec, endSec, label) {
@@ -1463,6 +1471,7 @@ async function loadSong(songId) {
   state.gridAnchorIdx = null;
   state.gridPreviewTimes = null;
   document.body.classList.remove("imported-tja");
+  document.getElementById("btnAttachTjaAudio")?.classList.add("hidden");
   document.getElementById("songSelect").disabled = false;
   document.getElementById("presetSelect").disabled = false;
   document.getElementById("btnExport").textContent = "Export to YataiDON";
@@ -1501,6 +1510,7 @@ async function loadSong(songId) {
   populateInspector();
   renderDiagnostics();
   populateChartControls();
+  updateSongModeBadge();
   initWaveSurfer(`/api/songs/${songId}/audio?stem=mix`);
 }
 
@@ -1513,6 +1523,7 @@ async function loadImportedTja(importId, sourcePath = null) {
   state.gridAnchorIdx = null;
   state.gridPreviewTimes = null;
   document.body.classList.add("imported-tja");
+  document.getElementById("btnAttachTjaAudio")?.classList.remove("hidden");
   const response = await fetch(`/api/imported/${importId}`);
   if (!response.ok) {
     showToast(`Could not load imported TJA: ${importId}`);
@@ -1594,26 +1605,13 @@ async function init() {
     return;
   }
 
-  const res = await fetch("/api/songs");
-  if (!res.ok) {
-    showToast("Could not load workspace songs");
-    return;
-  }
-  const json = await res.json();
-  const sel = document.getElementById("songSelect");
-  sel.innerHTML = "";
-  json.songs.forEach((s) => {
-    const opt = document.createElement("option");
-    opt.value = s.song_id;
-    opt.textContent = s.song_id;
-    sel.appendChild(opt);
-  });
-  if (json.songs.length > 0) {
+  const songs = await refreshSongAndProjectDropdown();
+  if (songs.length > 0) {
     const requested = new URLSearchParams(window.location.search).get("song");
-    const preferred = json.songs.find((s) => s.song_id === requested)?.song_id ||
-      json.songs.find((s) => s.song_id === "dumpweed")?.song_id ||
-      json.songs[0].song_id;
-    sel.value = preferred;
+    const preferred = songs.find((s) => s.song_id === requested)?.song_id ||
+      songs.find((s) => s.song_id === "dumpweed")?.song_id ||
+      songs[0].song_id;
+    document.getElementById("songSelect").value = preferred;
     await loadSong(preferred);
   }
   requestAnimationFrame(drawLoop);
@@ -3209,6 +3207,7 @@ bindSliderPair(
 );
 bindSliderPair("ctrlTripleMaxBpm", "lblCtrlTripleBpm", (v) => String(Math.round(v)), 235, "btnResetCtrlTripleBpm");
 bindSliderPair("ctrlTripleRamp", "lblCtrlTripleRamp", (v) => `${Math.round(v)}%`, 50, "btnResetCtrlTripleRamp");
+bindSliderPair("ctrlTripleMaxHits", "lblCtrlTripleMaxHits", (v) => String(Math.round(v)), 6, "btnResetCtrlTripleMaxHits");
 bindSliderPair("ctrlSectionVariety", "lblCtrlSecVariety", (v) => `${Math.round(v)}%`, 35, "btnResetCtrlSecVariety");
 bindSliderPair("ctrlVocalMin", "lblCtrlVocalMin", (v) => v.toFixed(2), 0.36, "btnResetCtrlVocalMin");
 bindSliderPair("ctrlGuitarMin", "lblCtrlGuitarMin", (v) => v.toFixed(2), 0.58, "btnResetCtrlGuitarMin");
@@ -3309,7 +3308,17 @@ document.getElementById("balloonCount").addEventListener("change", (e) => {
   rebuildChart(false);
 });
 
-document.getElementById("songSelect").addEventListener("change", (e) => loadSong(e.target.value));
+document.getElementById("songSelect").addEventListener("change", async (e) => {
+  const val = e.target.value;
+  if (!val) return;
+  if (val.startsWith("project:")) {
+    await loadSavedProject(val.slice("project:".length));
+  } else {
+    state.activeProjectId = null;
+    updateSongModeBadge();
+    await loadSong(val);
+  }
+});
 document.getElementById("stemSelect").addEventListener("change", (e) => {
   if (!wavesurfer || !state.songId) return;
   const t = getCurrentTimeSec();
@@ -3818,7 +3827,21 @@ document.getElementById("btnResetEdits").addEventListener("click", () => {
   showToast(`${difficulty} manual edits cleared`);
 });
 
-document.getElementById("btnExport").addEventListener("click", () => rebuildChart(true));
+document.getElementById("btnExport").addEventListener("click", () => {
+  if (!state.data) return;
+  if (state.importId || !state.activeProjectId) {
+    rebuildChart(true);
+    return;
+  }
+  const baseId = state.songId || "song";
+  const projSlug = state.activeProjectId;
+  const projTitle = state.activeProjectName || projSlug;
+  document.getElementById("lblExportDraftNote").textContent =
+    `Currently editing draft "★ ${projTitle}" (based on "${baseId}"). Choose whether to export as a separate song or overwrite "${baseId}":`;
+  document.getElementById("exportDraftTitleInput").value = projTitle;
+  document.getElementById("exportDraftIdInput").value = projSlug;
+  document.getElementById("exportDraftModal").classList.remove("hidden");
+});
 
 // --- Editable Star Rating (LEVEL) ---
 document.getElementById("courseStarsInput").addEventListener("change", (e) => {
@@ -4040,8 +4063,11 @@ document.getElementById("btnConfirmSaveProject").addEventListener("click", async
   }
   const saved = await res.json();
   state.activeProjectName = saved.project_name;
+  state.activeProjectId = saved.project_id;
+  await refreshSongAndProjectDropdown(`project:${saved.project_id}`);
+  updateSongModeBadge();
   document.getElementById("projectModal").classList.add("hidden");
-  showToast(`Saved project → ${saved.project_id}.taikolab.json`);
+  showToast(`Saved draft → ★ ${saved.project_name}`);
 });
 
 async function refreshProjectList() {
@@ -4073,7 +4099,12 @@ async function refreshProjectList() {
     row.querySelector(".btn-open-proj").addEventListener("click", () => loadSavedProject(p.project_id));
     row.querySelector(".btn-del-proj").addEventListener("click", async () => {
       await fetch(`/api/projects/${encodeURIComponent(p.project_id)}`, { method: "DELETE" });
+      if (state.activeProjectId === p.project_id) {
+        state.activeProjectId = null;
+        updateSongModeBadge();
+      }
       await refreshProjectList();
+      await refreshSongAndProjectDropdown(state.songId);
     });
     listEl.appendChild(row);
   }
@@ -4100,6 +4131,7 @@ async function loadSavedProject(projectId) {
   }
 
   state.activeProjectName = project.project_name;
+  state.activeProjectId = projectId;
   state.data.overrides = project.overrides;
   document.getElementById("globalOffsetInput").value = project.overrides.global_offset_ms || 0;
   document.getElementById("laneZoom").value = String(project.lane_zoom || 340);
@@ -4115,7 +4147,11 @@ async function loadSavedProject(projectId) {
     populateChartControls();
   }
   seekToSec(project.playhead_sec || 0);
-  showToast(`Loaded project '${project.project_name}'`);
+  if (project.mode === "song") {
+    await refreshSongAndProjectDropdown(`project:${projectId}`);
+  }
+  updateSongModeBadge();
+  showToast(`Loaded draft ★ ${project.project_name}`);
 }
 
 document.getElementById("btnOpenProject").addEventListener("click", async () => {
@@ -4127,4 +4163,471 @@ document.getElementById("btnOpenProject").addEventListener("click", async () => 
 });
 
 refreshSliderProfiles();
+
+// --- Section Customizer Matrix Modal & Save-As-New (-s) ---
+const MATRIX_MODE_LABELS = {
+  auto: "Course Default (Untouched)",
+  drums: "Drums Only",
+  vocals: "Vocals Only",
+  guitar: "Instruments Only",
+  drums_vocals: "Drums + Vocals",
+  hybrid: "Drums + Instruments",
+  vocals_guitar: "Vocals + Instruments",
+  all_balanced: "All Balanced (Drums Lead)",
+  chaos_roll: "Chaos Drumroll",
+};
+
+function matrixChecksFromMode(mode) {
+  const m = {
+    drums: [true, false, false],
+    vocals: [false, true, false],
+    guitar: [false, false, true],
+    drums_vocals: [true, true, false],
+    hybrid: [true, false, true],
+    vocals_guitar: [false, true, true],
+    all_balanced: [true, true, true],
+  };
+  return m[mode] || [false, false, false];
+}
+
+function matrixModeFromChecks(d, v, g) {
+  if (d && v && g) return "all_balanced";
+  if (d && v) return "drums_vocals";
+  if (d && g) return "hybrid";
+  if (v && g) return "vocals_guitar";
+  if (d) return "drums";
+  if (v) return "vocals";
+  if (g) return "guitar";
+  return "auto";
+}
+
+function baselineRuleForSection(sec) {
+  const courses = state.data?.chart?.courses || [];
+  const activeDiff = document.getElementById("diffSelect").value;
+  const baselineDiff = courses.some((c) => c.difficulty === "hard") ? "hard" : activeDiff;
+  return sec.difficulty_rules?.[baselineDiff] || sec;
+}
+
+function renderSectionMatrixModal() {
+  if (!state.data || state.importId) return;
+  const courses = state.data.chart.courses || [];
+  const targetBox = document.getElementById("matrixDiffTargets");
+  targetBox.innerHTML = "";
+  for (const c of courses) {
+    const lbl = document.createElement("label");
+    lbl.className = "inline-check";
+    lbl.innerHTML = `<input type="checkbox" class="matrix-diff-chk" value="${c.difficulty}" checked /> ${COURSE_LABELS[c.difficulty] || c.difficulty}`;
+    targetBox.appendChild(lbl);
+  }
+
+  const tbody = document.getElementById("sectionMatrixBody");
+  tbody.innerHTML = "";
+  const secs = state.data.overrides.sections || [];
+  const baseTriplePct = "";
+  const baseMaxHits = "";
+
+  secs.forEach((sec, idx) => {
+    const rule = baselineRuleForSection(sec);
+    const mode = rule.follow_mode || "auto";
+    const [bd, bv, bg] = matrixChecksFromMode(mode);
+    const speedVal = Number(rule.scroll_multiplier ?? 1.0).toFixed(2);
+    const densPct = Math.round((rule.density_scale ?? 1.0) * 100);
+    const triVal = (rule.groove_triple_density !== null && rule.groove_triple_density !== undefined)
+      ? String(Math.round(rule.groove_triple_density * 100))
+      : baseTriplePct;
+    const hitsVal = (rule.groove_triple_max_hits !== null && rule.groove_triple_max_hits !== undefined)
+      ? String(rule.groove_triple_max_hits)
+      : baseMaxHits;
+    const invChecked = Boolean(rule.invert_colors);
+
+    const tr = document.createElement("tr");
+    tr.dataset.secIdx = String(idx);
+    tr.dataset.dirty = "0";
+    tr.innerHTML = `
+      <td>
+        <div><strong>${sec.label || `Part ${idx + 1}`}</strong></div>
+        <div class="sec-meta mono">${fmtTime(sec.start_sec)} &ndash; ${fmtTime(sec.end_sec)}</div>
+      </td>
+      <td>
+        <div class="matrix-focus-cell">
+          <div class="matrix-src-checks">
+            <label class="inline-check"><input type="checkbox" class="mx-src-d" ${bd ? "checked" : ""} /> Drums</label>
+            <label class="inline-check"><input type="checkbox" class="mx-src-v" ${bv ? "checked" : ""} /> Vocals</label>
+            <label class="inline-check"><input type="checkbox" class="mx-src-g" ${bg ? "checked" : ""} /> Instruments</label>
+          </div>
+          <select class="mx-follow">
+            ${Object.entries(MATRIX_MODE_LABELS).map(([k, txt]) => `<option value="${k}" ${k === mode ? "selected" : ""}>${txt}</option>`).join("")}
+          </select>
+        </div>
+      </td>
+      <td><input type="number" class="matrix-num mx-speed" min="0.25" max="3.00" step="0.05" value="${speedVal}" title="Relative highway speed multiplier" /> x</td>
+      <td><input type="number" class="matrix-num mx-density" min="30" max="150" step="5" value="${densPct}" title="Section note density %" /> %</td>
+      <td><input type="number" class="matrix-num mx-triples" min="0" max="100" step="5" value="${triVal}" placeholder="Auto" title="Blank = inherit global/course triple %" /> %</td>
+      <td><input type="number" class="matrix-num mx-maxhits" min="4" max="10" step="1" value="${hitsVal}" placeholder="Auto" title="Max hits per bar eligible for triples (4-10)" /></td>
+      <td><label class="inline-check"><input type="checkbox" class="mx-invert" ${invChecked ? "checked" : ""} /> Invert Don &harr; Ka</label></td>
+      <td><button type="button" class="btn-xs mx-jump">Go</button></td>
+    `;
+
+    const markDirty = () => {
+      tr.dataset.dirty = "1";
+      tr.classList.add("matrix-row-dirty");
+    };
+    const chkD = tr.querySelector(".mx-src-d");
+    const chkV = tr.querySelector(".mx-src-v");
+    const chkG = tr.querySelector(".mx-src-g");
+    const selF = tr.querySelector(".mx-follow");
+
+    [chkD, chkV, chkG].forEach((c) => c.addEventListener("change", () => {
+      selF.value = matrixModeFromChecks(chkD.checked, chkV.checked, chkG.checked);
+      markDirty();
+    }));
+    selF.addEventListener("change", () => {
+      const [nd, nv, ng] = matrixChecksFromMode(selF.value);
+      chkD.checked = nd;
+      chkV.checked = nv;
+      chkG.checked = ng;
+      markDirty();
+    });
+    tr.querySelectorAll(".mx-speed, .mx-density, .mx-triples, .mx-maxhits, .mx-invert").forEach((el) => {
+      el.addEventListener("change", markDirty);
+    });
+    tr.querySelector(".mx-jump").addEventListener("click", () => {
+      selectSection(idx);
+      seekToSec(sec.start_sec);
+    });
+
+    tbody.appendChild(tr);
+  });
+}
+
+function applySectionMatrixToOverrides() {
+  if (!state.data || state.importId) return 0;
+  const targetDiffs = [...document.querySelectorAll(".matrix-diff-chk")]
+    .filter((c) => c.checked)
+    .map((c) => c.value);
+  if (!targetDiffs.length) {
+    showToast("Check at least one Target Difficulty.");
+    return -1;
+  }
+  const allDiffs = (state.data.chart?.courses || []).map((c) => c.difficulty);
+  const applyToAll = targetDiffs.length === allDiffs.length;
+  const secs = state.data.overrides.sections || [];
+  let dirtyCount = 0;
+
+  document.querySelectorAll("#sectionMatrixBody tr").forEach((tr) => {
+    if (tr.dataset.dirty !== "1") return;
+    const idx = Number(tr.dataset.secIdx);
+    const sec = secs[idx];
+    if (!sec) return;
+    dirtyCount += 1;
+
+    const mode = tr.querySelector(".mx-follow").value;
+    const scrollMult = Math.max(0.25, Math.min(3.0, parseFloat(tr.querySelector(".mx-speed").value || "1") || 1.0));
+    const densScale = Math.max(0.30, Math.min(1.50, (parseFloat(tr.querySelector(".mx-density").value || "100") || 100) / 100.0));
+    const triRaw = tr.querySelector(".mx-triples").value.trim();
+    const triDen = triRaw !== "" ? Math.max(0.0, Math.min(1.0, parseFloat(triRaw) / 100.0)) : null;
+    const hitsRaw = tr.querySelector(".mx-maxhits").value.trim();
+    const maxHits = hitsRaw !== "" ? Math.max(4, Math.min(10, parseInt(hitsRaw, 10))) : null;
+    const invertColors = tr.querySelector(".mx-invert").checked;
+
+    const baseRule = baselineRuleForSection(sec);
+    const newRule = {
+      follow_mode: mode,
+      drum_sensitivity: baseRule.drum_sensitivity ?? 1.0,
+      vocal_sensitivity: baseRule.vocal_sensitivity ?? 1.0,
+      enable_big_notes: baseRule.enable_big_notes !== false,
+      fold_blasts_to_rolls: baseRule.fold_blasts_to_rolls ?? null,
+      max_nps: baseRule.max_nps ?? null,
+      scroll_multiplier: scrollMult,
+      density_scale: densScale,
+      groove_triple_density: triDen,
+      groove_triple_max_hits: maxHits,
+      invert_colors: invertColors,
+    };
+
+    if (!sec.difficulty_rules) sec.difficulty_rules = {};
+    if (applyToAll) {
+      sec.follow_mode = mode;
+      sec.scroll_multiplier = scrollMult;
+      sec.density_scale = densScale;
+      sec.groove_triple_density = triDen;
+      sec.groove_triple_max_hits = maxHits;
+      sec.invert_colors = invertColors;
+    }
+    for (const d of targetDiffs) {
+      sec.difficulty_rules[d] = { ...newRule };
+    }
+  });
+  return dirtyCount;
+}
+
+document.getElementById("btnOpenSectionMatrix").addEventListener("click", () => {
+  if (!state.data || state.importId) return;
+  renderSectionMatrixModal();
+  document.getElementById("sectionMatrixModal").classList.remove("hidden");
+});
+document.getElementById("btnCloseSectionMatrix").addEventListener("click", () => {
+  document.getElementById("sectionMatrixModal").classList.add("hidden");
+});
+document.getElementById("btnMatrixAllDiffs").addEventListener("click", () => {
+  document.querySelectorAll(".matrix-diff-chk").forEach((c) => { c.checked = true; });
+});
+document.getElementById("btnMatrixHardOni").addEventListener("click", () => {
+  document.querySelectorAll(".matrix-diff-chk").forEach((c) => { c.checked = (c.value === "hard" || c.value === "oni"); });
+});
+document.getElementById("btnMatrixActiveOnly").addEventListener("click", () => {
+  const active = document.getElementById("diffSelect").value;
+  document.querySelectorAll(".matrix-diff-chk").forEach((c) => { c.checked = (c.value === active); });
+});
+
+document.getElementById("btnResetSectionMatrix").addEventListener("click", async () => {
+  if (!state.data || state.importId) return;
+  saveUndoPoint();
+  (state.data.overrides.sections || []).forEach((sec) => {
+    sec.scroll_multiplier = 1.0;
+    sec.density_scale = 1.0;
+    sec.groove_triple_density = null;
+    sec.groove_triple_max_hits = null;
+    sec.invert_colors = false;
+    sec.follow_mode = "auto";
+    sec.difficulty_rules = {};
+  });
+  renderSectionMatrixModal();
+  state.editSeq += 1;
+  await rebuildChart(false);
+  showToast("Reset per-section customizations");
+});
+
+document.getElementById("btnPreviewSectionMatrix").addEventListener("click", async () => {
+  if (!state.data || state.importId) return;
+  saveUndoPoint();
+  const changed = applySectionMatrixToOverrides();
+  if (changed < 0) return;
+  state.editSeq += 1;
+  await rebuildChart(false);
+  populateInspector();
+  renderSectionList();
+  showToast(changed > 0 ? `Applied ${changed} modified section(s) to preview` : "Preview refreshed");
+});
+
+document.getElementById("btnSaveSectionMatrixPrompt").addEventListener("click", () => {
+  if (!state.data || state.importId) return;
+  const origTitle = state.data.overrides.title || state.data.analysis_summary?.title || state.songId || "Chart";
+  const suggestedTitle = origTitle.endsWith("-s") ? origTitle : `${origTitle}-s`;
+  const suggestedId = state.songId.endsWith("-s") ? state.songId : `${state.songId}-s`;
+  document.getElementById("saveAsTitleInput").value = suggestedTitle;
+  document.getElementById("saveAsIdInput").value = suggestedId;
+  document.getElementById("saveAsModal").classList.remove("hidden");
+});
+
+document.getElementById("btnCloseSaveAsModal").addEventListener("click", () => {
+  document.getElementById("saveAsModal").classList.add("hidden");
+});
+
+document.getElementById("btnMatrixOverwrite").addEventListener("click", async () => {
+  saveUndoPoint();
+  const changed = applySectionMatrixToOverrides();
+  if (changed < 0) return;
+  document.getElementById("saveAsModal").classList.add("hidden");
+  document.getElementById("sectionMatrixModal").classList.add("hidden");
+  state.editSeq += 1;
+  await rebuildChart(true);
+});
+
+document.getElementById("btnMatrixSaveAsNew").addEventListener("click", async () => {
+  const changed = applySectionMatrixToOverrides();
+  if (changed < 0) return;
+  const newTitle = document.getElementById("saveAsTitleInput").value.trim();
+  const newId = document.getElementById("saveAsIdInput").value.trim();
+  state.data.overrides.preset = document.getElementById("presetSelect").value;
+  state.data.overrides.global_offset_ms = parseFloat(document.getElementById("globalOffsetInput").value || "0");
+  state.data.overrides.tap_latency_ms = parseFloat(document.getElementById("tapLatencyInput").value || "0");
+
+  const res = await fetch(`/api/songs/${encodeURIComponent(state.songId)}/save-as`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      new_song_id: newId || null,
+      new_title: newTitle || `${state.songId}-s`,
+      overrides: state.data.overrides,
+      export_to_sim: true,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    showToast(err.detail || "Could not save sectioned chart");
+    return;
+  }
+  const payload = await res.json();
+  document.getElementById("saveAsModal").classList.add("hidden");
+  document.getElementById("sectionMatrixModal").classList.add("hidden");
+
+  const songSel = document.getElementById("songSelect");
+  if (![...songSel.options].some((o) => o.value === payload.song_id)) {
+    const opt = document.createElement("option");
+    opt.value = payload.song_id;
+    opt.textContent = payload.song_id;
+    songSel.appendChild(opt);
+  }
+  songSel.value = payload.song_id;
+  state.songId = payload.song_id;
+  state.data = payload;
+  state.activeProjectName = payload.song_id;
+  renderSectionList();
+  renderRegions(true);
+  renderDiagnostics();
+  populateChartControls();
+  populateInspector();
+  showToast(`Saved new sectioned chart -> ${payload.song_id}`);
+});
+
+document.getElementById("btnDeleteSong").addEventListener("click", async () => {
+  if (!state.songId || state.importId) return;
+  const ok = window.confirm(
+    `Delete "${state.songId}" from TaikoLab workspace and YataiDON Songs?\n(Safety backups are kept under _backups / _TaikoLabBackups.)`
+  );
+  if (!ok) return;
+  const res = await fetch(`/api/songs/${encodeURIComponent(state.songId)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = await res.json();
+    showToast(err.detail || "Could not delete chart");
+    return;
+  }
+  const deletedId = state.songId;
+  const sel = document.getElementById("songSelect");
+  const opt = [...sel.options].find((o) => o.value === deletedId);
+  if (opt) opt.remove();
+  showToast(`Deleted '${deletedId}' from workspace & YataiDON`);
+  if (sel.options.length > 0) {
+    await loadSong(sel.options[0].value);
+  } else {
+    state.songId = null;
+    state.data = null;
+    renderSectionList();
+  }
+});
+
+function updateSongModeBadge() {
+  const badge = document.getElementById("songModeBadge");
+  if (!badge) return;
+  if (state.activeProjectId) {
+    badge.textContent = "★ DRAFT";
+    badge.className = "badge mode-badge-draft";
+    badge.title = "Unexported draft project. Export will ask before overwriting the base song.";
+  } else {
+    badge.textContent = "LIVE";
+    badge.className = "badge mode-badge-live";
+    badge.title = "Workspace song.";
+  }
+}
+
+async function refreshSongAndProjectDropdown(selectValue = null) {
+  const [songsRes, projRes] = await Promise.all([fetch("/api/songs"), fetch("/api/projects")]);
+  const songsJson = songsRes.ok ? await songsRes.json() : { songs: [] };
+  const projJson = projRes.ok ? await projRes.json() : { projects: [] };
+  const songs = songsJson.songs || [];
+  const projects = (projJson.projects || []).filter((p) => p.mode === "song");
+
+  const sel = document.getElementById("songSelect");
+  const prev = selectValue ?? sel.value;
+  sel.innerHTML = "";
+
+  const grpSongs = document.createElement("optgroup");
+  grpSongs.label = "Songs (Workspace)";
+  songs.forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = s.song_id;
+    opt.textContent = s.song_id;
+    grpSongs.appendChild(opt);
+  });
+  sel.appendChild(grpSongs);
+
+  if (projects.length > 0) {
+    const grpDrafts = document.createElement("optgroup");
+    grpDrafts.label = "Draft Projects (★ Unexported)";
+    projects.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = `project:${p.project_id}`;
+      opt.textContent = `★ ${p.project_name}`;
+      grpDrafts.appendChild(opt);
+    });
+    sel.appendChild(grpDrafts);
+  }
+
+  if (prev && [...sel.options].some((o) => o.value === prev)) {
+    sel.value = prev;
+  }
+  return songs;
+}
+
+document.getElementById("btnCloseExportDraftModal").addEventListener("click", () => {
+  document.getElementById("exportDraftModal").classList.add("hidden");
+});
+document.getElementById("btnExportDraftOverwrite").addEventListener("click", async () => {
+  document.getElementById("exportDraftModal").classList.add("hidden");
+  await rebuildChart(true);
+});
+document.getElementById("btnExportDraftAsNew").addEventListener("click", async () => {
+  if (!state.data || !state.songId) return;
+  const newTitle = document.getElementById("exportDraftTitleInput").value.trim();
+  const newId = document.getElementById("exportDraftIdInput").value.trim();
+  state.data.overrides.preset = document.getElementById("presetSelect").value;
+  state.data.overrides.global_offset_ms = parseFloat(document.getElementById("globalOffsetInput").value || "0");
+  state.data.overrides.tap_latency_ms = parseFloat(document.getElementById("tapLatencyInput").value || "0");
+  const res = await fetch(`/api/songs/${encodeURIComponent(state.songId)}/save-as`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      new_song_id: newId || null,
+      new_title: newTitle || state.activeProjectName || state.songId,
+      overrides: state.data.overrides,
+      export_to_sim: true,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    showToast(err.detail || "Could not export draft as new song");
+    return;
+  }
+  const payload = await res.json();
+  document.getElementById("exportDraftModal").classList.add("hidden");
+  state.activeProjectId = null;
+  state.songId = payload.song_id;
+  state.data = payload;
+  state.activeProjectName = payload.song_id;
+  await refreshSongAndProjectDropdown(payload.song_id);
+  updateSongModeBadge();
+  renderSectionList();
+  renderRegions(true);
+  renderDiagnostics();
+  populateChartControls();
+  populateInspector();
+  showToast(`Exported draft as live song → ${payload.song_id}`);
+});
+
+document.getElementById("btnAttachTjaAudio").addEventListener("click", () => {
+  if (!state.importId) return;
+  document.getElementById("tjaAudioFileInput").click();
+});
+
+document.getElementById("tjaAudioFileInput").addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = "";
+  if (!file || !state.importId) return;
+  const res = await fetch(`/api/imported/${encodeURIComponent(state.importId)}/upload-audio?filename=${encodeURIComponent(file.name)}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    showToast(err.detail || "Could not attach audio");
+    return;
+  }
+  document.getElementById("stemSelect").disabled = false;
+  document.getElementById("btnPlay").disabled = false;
+  document.getElementById("btnLoopSec").disabled = false;
+  initWaveSurfer(`/api/imported/${encodeURIComponent(state.importId)}/audio?t=${Date.now()}`);
+  showToast(`Attached audio: ${file.name}`);
+});
 init();

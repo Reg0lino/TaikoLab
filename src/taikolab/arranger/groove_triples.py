@@ -110,18 +110,37 @@ def _is_eligible_bar(
     if measure.bpm > _max_bpm_for(difficulty, plan.groove_triple_max_bpm):
         return False
 
-    step_unit = grid // 16
+    is_halftime_32 = (grid == 32 and measure.bpm < 135.0)
+    step_unit = 1 if is_halftime_32 else (grid // 16)
+    max_hits = max(4, min(10, plan.groove_triple_max_hits))
+
+    if is_halftime_32:
+        h1 = [n for n in measure.notes[:16] if n in _HIT_CODES]
+        h2 = [n for n in measure.notes[16:] if n in _HIT_CODES]
+        if not ((3 <= len(h1) <= max_hits) or (3 <= len(h2) <= max_hits)):
+            return False
+        dur = max(0.1, measure.end_sec - measure.start_sec)
+        total_hits = len(h1) + len(h2)
+        nps_cap = 7.5 if max_hits <= 6 else (7.5 + (max_hits - 6) * 1.1)
+        if (total_hits / dur) >= nps_cap:
+            return False
+        return bool(
+            _find_pockets(measure.notes[:16], measure.notes[16:], 1)
+            or _find_pockets(measure.notes[16:], next_measure.notes[:16] if next_measure else None, 1)
+        )
+
     active_slots = [idx for idx, n in enumerate(measure.notes) if n in _HIT_CODES]
-    if not (3 <= len(active_slots) <= 6):
+    if not (3 <= len(active_slots) <= max_hits):
         return False
     dur = max(0.1, measure.end_sec - measure.start_sec)
-    if (len(active_slots) / dur) >= 6.5:
+    nps_cap = 6.5 if max_hits <= 6 else (6.5 + (max_hits - 6) * 1.1)
+    if (len(active_slots) / dur) >= nps_cap:
         return False
 
-    # Skip dense/gallop bars that already contain adjacent 16th-note runs (e.g. NOFX d-d-k)
-    for i in range(len(active_slots) - 1):
-        if (active_slots[i + 1] - active_slots[i]) <= step_unit:
-            return False
+    if max_hits <= 6:
+        for i in range(len(active_slots) - 1):
+            if (active_slots[i + 1] - active_slots[i]) <= step_unit:
+                return False
 
     next_notes = next_measure.notes if next_measure else None
     return bool(_find_pockets(measure.notes, next_notes, step_unit))
@@ -133,13 +152,30 @@ def _drum_rhythm_signature(
     grid_size: int,
 ) -> tuple[tuple[int, int], ...]:
     step_unit = max(1, grid_size // 16)
+    norm_color = {_DON: _DON, _BIG_DON: _DON, _KAT: _KAT, _BIG_KAT: _KAT}
     return tuple(
         sorted(
-            (s_idx // step_unit, cand.note_type)
+            (s_idx // step_unit, norm_color[cand.note_type])
             for (m_i, s_idx), cand in drum_candidates.items()
             if m_i == measure_idx and cand.source.startswith("drum:") and cand.note_type in _HIT_CODES
         )
     )
+
+
+def _sigs_match_groove(
+    sig_a: tuple[tuple[int, int], ...],
+    sig_b: tuple[tuple[int, int], ...],
+    is_halftime: bool,
+) -> bool:
+    if sig_a == sig_b:
+        return True
+    if not is_halftime or not sig_a or not sig_b:
+        return False
+    a1 = tuple((s, c) for s, c in sig_a if s < 8)
+    a2 = tuple((s - 8, c) for s, c in sig_a if s >= 8)
+    b1 = tuple((s, c) for s, c in sig_b if s < 8)
+    b2 = tuple((s - 8, c) for s, c in sig_b if s >= 8)
+    return (len(a1) >= 3 and a1 in (b1, b2)) or (len(a2) >= 3 and a2 in (b1, b2))
 
 
 def _select_weighted_bars(
@@ -190,6 +226,7 @@ def _select_weighted_bars(
 def _collect_repeat_candidates(
     eligible: list[bool],
     sigs: list[tuple[tuple[int, int], ...]],
+    halftime_flags: list[bool] | None = None,
 ) -> list[tuple[int, bool]]:
     """Return sorted (measure_idx, is_primary_alternating_bar) across repeating runs."""
     n = len(eligible)
@@ -197,8 +234,9 @@ def _collect_repeat_candidates(
     for i in range(n):
         if not eligible[i] or not sigs[i]:
             continue
+        is_ht = bool(halftime_flags and halftime_flags[i])
         for j in range(max(0, i - 4), min(n, i + 5)):
-            if j != i and sigs[j] == sigs[i]:
+            if j != i and _sigs_match_groove(sigs[i], sigs[j], is_ht):
                 in_repeat[i] = True
                 break
 
@@ -362,9 +400,9 @@ def apply_groove_triples(
 
     densities = [p.groove_triple_density for p in plans if p.groove_triple_density is not None]
     caps = [p.max_groove_triples for p in plans if p.max_groove_triples is not None]
-    density = max(densities) if densities else None
+    max_den = max(densities) if densities else None
     cap = max(caps) if caps else None
-    if (density is None or density <= 0.0) and (cap is None or cap <= 0):
+    if (max_den is None or max_den <= 0.0) and (cap is None or cap <= 0):
         return measures
     complexity = max(0.0, min(1.0, plans[0].groove_triple_complexity))
     ramp = max(0.0, min(1.0, plans[0].groove_triple_ramp))
@@ -377,22 +415,64 @@ def apply_groove_triples(
         _drum_rhythm_signature(drum_candidates, i, len(m.notes))
         for i, m in enumerate(measures)
     ]
-    target_indices = _select_target_bars(eligible, sigs, cap=cap, ramp=ramp, density=density)
+    ht_flags = [(len(m.notes) == 32 and m.bpm < 135.0) for m in measures]
+    distinct_densities = {p.groove_triple_density for p in plans}
+    if len(distinct_densities) <= 1 or cap is not None:
+        cands = _collect_repeat_candidates(eligible, sigs, ht_flags)
+        if not cands:
+            target_indices = []
+        elif max_den is not None and cap is None:
+            t_cap = len(cands) if max_den >= 0.999 else (0 if max_den <= 0.0 else max(1, round(len(cands) * max_den)))
+            target_indices = _select_weighted_bars(cands, len(measures), t_cap, ramp)
+        else:
+            target_indices = _select_weighted_bars(cands, len(measures), cap or 0, ramp)
+    else:
+        all_cands = _collect_repeat_candidates(eligible, sigs, ht_flags)
+        target_indices = []
+        g_start = 0
+        while g_start < len(plans):
+            g_den = plans[g_start].groove_triple_density
+            g_end = g_start + 1
+            while g_end < len(plans) and plans[g_end].groove_triple_density == g_den:
+                g_end += 1
+            if g_den is not None and g_den > 0.0:
+                group_cands = [(m, is_p) for m, is_p in all_cands if g_start <= m < g_end]
+                if group_cands:
+                    g_cap = len(group_cands) if g_den >= 0.999 else max(1, round(len(group_cands) * g_den))
+                    target_indices.extend(_select_weighted_bars(group_cands, len(measures), g_cap, ramp))
+            g_start = g_end
+        target_indices.sort()
     if not target_indices:
         return measures
 
     out = [m.model_copy(deep=True) for m in measures]
     for seq_idx, m_idx in enumerate(target_indices):
         m = out[m_idx]
-        step_unit = max(1, len(m.notes) // 16)
-        next_notes = out[m_idx + 1].notes if m_idx + 1 < len(out) else None
-        _try_apply_pocket(
-            m.notes,
-            next_notes,
-            step_unit=step_unit,
-            complexity=complexity,
-            variant_seed=seq_idx + m_idx,
-            difficulty=difficulty,
-        )
+        is_ht = (len(m.notes) == 32 and m.bpm < 135.0)
+        if is_ht:
+            first_half = list(m.notes[:16])
+            second_half = list(m.notes[16:])
+            nxt = out[m_idx + 1].notes[:16] if m_idx + 1 < len(out) else None
+            prefer_second = (seq_idx % 2 == 1)
+            if prefer_second:
+                applied = _try_apply_pocket(second_half, nxt, 1, complexity, seq_idx + m_idx + 1, difficulty)
+                if not applied or (difficulty in ("oni", "ura") and complexity >= 0.65):
+                    _try_apply_pocket(first_half, second_half, 1, complexity, seq_idx + m_idx, difficulty)
+            else:
+                applied = _try_apply_pocket(first_half, second_half, 1, complexity, seq_idx + m_idx, difficulty)
+                if not applied or (difficulty in ("oni", "ura") and complexity >= 0.65):
+                    _try_apply_pocket(second_half, nxt, 1, complexity, seq_idx + m_idx + 1, difficulty)
+            m.notes = first_half + second_half
+        else:
+            step_unit = max(1, len(m.notes) // 16)
+            next_notes = out[m_idx + 1].notes if m_idx + 1 < len(out) else None
+            _try_apply_pocket(
+                m.notes,
+                next_notes,
+                step_unit=step_unit,
+                complexity=complexity,
+                variant_seed=seq_idx + m_idx,
+                difficulty=difficulty,
+            )
 
     return out

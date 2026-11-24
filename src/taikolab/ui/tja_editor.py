@@ -135,20 +135,26 @@ def load_tja(path: Path) -> TjaDocument:
                 course_header_line = line_index
             elif key == "LEVEL" and current_diff:
                 level_lines[current_diff] = line_index
-                try:
-                    current_level = int(value.rstrip("+"))
-                except ValueError as exc:
-                    raise ValueError(f"Invalid LEVEL value for {current_name}.") from exc
-                if not 1 <= current_level <= 12:
-                    raise ValueError(f"LEVEL for {current_name} must be between 1 and 12.")
+                clean_lvl = value.split("//", 1)[0].strip().lstrip("★☆").rstrip("+").strip()
+                if not clean_lvl:
+                    current_level = 5
+                else:
+                    try:
+                        parsed_lvl = int(round(float(clean_lvl)))
+                    except ValueError as exc:
+                        raise ValueError(f"Invalid LEVEL value for {current_name}: {value!r}") from exc
+                    current_level = max(1, min(12, parsed_lvl))
             elif key == "BALLOON" and current_diff:
                 balloon_line = line_index
+                clean_b = value.split("//", 1)[0].strip()
                 try:
-                    current_balloons = [int(item.strip()) for item in value.split(",") if item.strip()]
+                    current_balloons = [
+                        max(1, min(1000, int(float(item.strip()))))
+                        for item in clean_b.split(",")
+                        if item.strip()
+                    ]
                 except ValueError as exc:
                     raise ValueError(f"Invalid BALLOON values for {current_name}.") from exc
-                if any(count < 1 or count > 1000 for count in current_balloons):
-                    raise ValueError(f"BALLOON counts for {current_name} must be between 1 and 1000.")
             continue
 
         if stripped.upper().startswith("#START"):
@@ -252,6 +258,19 @@ def load_tja(path: Path) -> TjaDocument:
         candidate = (path.parent / wave_filename).resolve()
         if candidate.is_relative_to(path.parent) and candidate.is_file():
             audio_path = candidate
+        else:
+            wave_stem = Path(wave_filename).stem.lower()
+            for ext in (".ogg", ".wav", ".mp3", ".flac"):
+                alt = next((p for p in path.parent.iterdir() if p.is_file() and p.suffix.lower() == ext and p.stem.lower() == wave_stem), None)
+                if alt is not None:
+                    audio_path = alt.resolve()
+                    break
+    if audio_path is None:
+        audio_cands = sorted(
+            [p for p in path.parent.iterdir() if p.is_file() and p.suffix.lower() in (".ogg", ".wav", ".mp3", ".flac")]
+        )
+        if len(audio_cands) == 1:
+            audio_path = audio_cands[0].resolve()
 
     chart = TaikoChart(
         title=header.get("TITLE", path.stem),

@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from taikolab.arranger.engine import arrange_song
 from taikolab.config import apply_chart_controls_to_config, load_config, load_wizard_preferences, save_wizard_preferences
 from taikolab.exporters.diagnostics import analyze_course
-from taikolab.exporters.tja_writer import export_to_opentaiko, write_tja_file
+from taikolab.exporters.tja_writer import export_to_opentaiko, resolve_opentaiko_box_dir, write_tja_file
 from taikolab.schemas import (
     DownbeatMarker,
     SavedProject,
@@ -60,6 +60,13 @@ class StraightenTapsRequest(BaseModel):
 
 class FillGapsRequest(BaseModel):
     taps: list[DownbeatMarker]
+
+
+class SaveAsSongRequest(BaseModel):
+    new_song_id: str | None = None
+    new_title: str
+    overrides: SongOverrides
+    export_to_sim: bool = True
 
 
 class OpenTjaRequest(BaseModel):
@@ -433,7 +440,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         import_id = uuid.uuid4().hex
         imported_tja[import_id] = document
-        return {"import_id": import_id, "title": document.chart.title}
+        return {"import_id": import_id, "title": document.chart.title, "has_audio": document.audio_path is not None}
 
     @app.get("/api/imported/{import_id}")
     def get_imported_tja(import_id: str):
@@ -503,6 +510,51 @@ def create_app() -> FastAPI:
         if document.audio_path is None:
             raise HTTPException(status_code=404, detail="The TJA WAVE audio file was not found beside the chart.")
         return FileResponse(str(document.audio_path))
+
+    @app.post("/api/imported/{import_id}/attach-audio")
+    def attach_imported_audio(import_id: str, req: OpenTjaRequest):
+        import shutil
+
+        document = imported_tja.get(import_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="This imported chart session has expired; open the TJA again.")
+        src = Path(req.path).expanduser().resolve()
+        if not src.is_file() or src.suffix.lower() not in (".mp3", ".ogg", ".wav", ".flac"):
+            raise HTTPException(status_code=400, detail="Choose a valid MP3, OGG, WAV, or FLAC audio file.")
+        dest = document.path.parent / src.name
+        if src != dest and not dest.exists():
+            shutil.copy2(src, dest)
+        final_audio = dest if dest.exists() else src
+        document.audio_path = final_audio
+        if not document.chart.wave_filename:
+            document.chart.wave_filename = final_audio.name
+            for idx, line in enumerate(document.lines):
+                if line.strip().upper().startswith("WAVE:"):
+                    document.lines[idx] = f"WAVE:{final_audio.name}"
+                    break
+            else:
+                document.lines.insert(min(len(document.lines), document.first_course_line), f"WAVE:{final_audio.name}")
+        return {"has_audio": True, "audio_path": str(final_audio), "wave_filename": final_audio.name}
+
+    @app.post("/api/imported/{import_id}/upload-audio")
+    async def upload_imported_audio(
+        import_id: str,
+        request: Request,
+        filename: str = Query("audio.ogg"),
+    ):
+        document = imported_tja.get(import_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail="This imported chart session has expired; open the TJA again.")
+        orig_name = Path(filename).name
+        if Path(orig_name).suffix.lower() not in (".mp3", ".ogg", ".wav", ".flac"):
+            raise HTTPException(status_code=400, detail="Choose a valid MP3, OGG, WAV, or FLAC audio file.")
+        dest = document.path.parent / orig_name
+        body = await request.body()
+        dest.write_bytes(body)
+        document.audio_path = dest
+        if not document.chart.wave_filename:
+            document.chart.wave_filename = dest.name
+        return {"has_audio": True, "audio_path": str(dest), "wave_filename": dest.name}
 
     def _saved_projects_dir() -> Path:
         cfg = load_config()
@@ -629,6 +681,33 @@ def create_app() -> FastAPI:
                     songs.append({"song_id": d.name, "has_overrides": (d / "overrides.json").exists()})
         return {"songs": songs}
 
+    @app.delete("/api/songs/{song_id}")
+    def delete_song_api(song_id: str):
+        import shutil
+
+        cfg = load_config()
+        safe_id = Path(song_id).name
+        song_dir = cfg.song_dir(safe_id)
+        if not song_dir.is_dir():
+            raise HTTPException(status_code=404, detail=f"Song '{safe_id}' not found")
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        ws_backup = song_dir.parent / "_backups" / f"{safe_id}_deleted_{stamp}"
+        ws_backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(song_dir), str(ws_backup))
+
+        sim_removed = None
+        if cfg.settings.opentaiko_songs_dir.strip():
+            songs_root = Path(cfg.settings.opentaiko_songs_dir)
+            box_root = resolve_opentaiko_box_dir(cfg.settings.opentaiko_songs_dir)
+            for candidate_dir in [d for d in (box_root / safe_id if box_root else None, songs_root / safe_id) if d and d.is_dir()]:
+                sim_backup = songs_root.parent / "_TaikoLabBackups" / safe_id / f"deleted_{stamp}"
+                sim_backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(candidate_dir), str(sim_backup))
+                sim_removed = str(candidate_dir)
+
+        return {"deleted": safe_id, "workspace_backup": str(ws_backup), "simulator_removed": sim_removed}
+
     @app.get("/api/songs/{song_id}")
     def get_song(song_id: str):
         return _build_chart_payload(song_id, overrides=None, export_sim=False)
@@ -640,6 +719,52 @@ def create_app() -> FastAPI:
     @app.post("/api/songs/{song_id}/export")
     def export_song_api(song_id: str, overrides: SongOverrides):
         return _build_chart_payload(song_id, overrides=overrides, export_sim=True)
+
+    @app.post("/api/songs/{song_id}/save-as")
+    def save_as_song_api(song_id: str, req: SaveAsSongRequest):
+        import shutil
+
+        cfg = load_config()
+        src_dir = cfg.song_dir(song_id)
+        analysis_path = src_dir / "analysis.json"
+        if not analysis_path.exists():
+            raise HTTPException(status_code=404, detail=f"Missing analysis.json for '{song_id}'")
+
+        analysis = SongAnalysis.model_validate_json(analysis_path.read_text(encoding="utf-8"))
+        base_new_id = re.sub(r"[^a-z0-9._-]+", "-", (req.new_song_id or f"{song_id}-s").strip().lower()).strip("-")
+        if not base_new_id:
+            base_new_id = f"{song_id}-s"
+
+        ws_root = src_dir.parent
+        sim_root = resolve_opentaiko_box_dir(cfg.settings.opentaiko_songs_dir)
+        candidate_id = base_new_id
+        suffix_num = 2
+        while (ws_root / candidate_id).exists() or (sim_root is not None and (sim_root / candidate_id).exists()):
+            stem_base = re.sub(r"-s\d*$", "", base_new_id)
+            candidate_id = f"{stem_base}-s{suffix_num}"
+            suffix_num += 1
+
+        dst_dir = cfg.song_dir(candidate_id)
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            copied_files: set[str] = set()
+            for fname in (analysis.audio_path, "audio_clean.wav"):
+                if not fname or fname in copied_files:
+                    continue
+                src_file = src_dir / fname
+                if src_file.is_file():
+                    shutil.copy2(src_file, dst_dir / fname)
+                    copied_files.add(fname)
+
+            new_title = req.new_title.strip() or f"{analysis.title}-s"
+            cloned_analysis = analysis.model_copy(update={"song_id": candidate_id, "title": new_title})
+            (dst_dir / "analysis.json").write_text(cloned_analysis.model_dump_json(indent=2), encoding="utf-8")
+
+            new_overrides = req.overrides.model_copy(update={"song_id": candidate_id, "title": new_title})
+            return _build_chart_payload(candidate_id, overrides=new_overrides, export_sim=req.export_to_sim)
+        except Exception:
+            shutil.rmtree(dst_dir, ignore_errors=True)
+            raise
 
     @app.post("/api/songs/{song_id}/sections/auto-split")
     def auto_split_sections_api(song_id: str):

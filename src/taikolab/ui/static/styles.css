@@ -400,3 +400,102 @@ kbd {
   flex-direction: column;
   gap: 5px;
 }
+body.imported-tja #btnOpenSectionMatrix { display: none; }
+.wave-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.btn-matrix {
+  background: linear-gradient(135deg, #ffd06b, #f59e0b);
+  color: #111318;
+  border: 1px solid #ffe49c;
+  font-weight: 800;
+  padding: 8px 16px;
+  font-size: 13px;
+  box-shadow: 0 2px 10px rgba(245, 185, 53, 0.35);
+}
+.btn-matrix:hover { filter: brightness(1.08); }
+.modal-card-wide {
+  width: min(1240px, 98vw);
+  max-height: 90vh;
+}
+.matrix-scope-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  background: #12151c;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.matrix-scope-actions { display: flex; gap: 6px; margin-left: auto; }
+.matrix-table-wrap {
+  overflow: auto;
+  max-height: 58vh;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #101319;
+}
+.matrix-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.matrix-table th {
+  position: sticky;
+  top: 0;
+  background: #171c25;
+  color: var(--muted);
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  z-index: 2;
+}
+.matrix-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #1e2430;
+  vertical-align: middle;
+}
+.matrix-table tr.matrix-row-dirty {
+  background: rgba(44, 168, 232, 0.08);
+}
+.matrix-focus-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 225px;
+}
+.matrix-src-checks {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.matrix-num { width: 72px; }
+body.imported-tja #btnDeleteSong { display: none; }
+
+.mode-badge-live {
+  border-color: #2c6e49;
+  color: var(--accent);
+  font-weight: 700;
+}
+.mode-badge-draft {
+  border-color: #9c7222;
+  background: #2b210f;
+  color: #ffd06b;
+  font-weight: 700;
+}
+body.imported-tja #songModeBadge { display: none; }
+.course-summary-row > div:first-child {
+  min-width: 0;
+  flex: 1;
+  word-break: break-word;
+}
+.course-summary-row .modal-actions {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+}

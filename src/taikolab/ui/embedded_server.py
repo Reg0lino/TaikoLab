@@ -83,7 +83,21 @@ class EmbeddedEditorServer:
         import_id = result.get("import_id")
         if not isinstance(import_id, str) or not import_id:
             raise RuntimeError("The editor server did not return a TJA import identifier")
+        self.last_import_has_audio = bool(result.get("has_audio", False))
         return import_id
+
+    def attach_tja_audio(self, import_id: str, audio_path: Path) -> bool:
+        if not self.url:
+            raise RuntimeError("The local editor server is not running.")
+        request = Request(
+            f"{self.url}/api/imported/{import_id}/attach-audio",
+            data=json.dumps({"path": str(audio_path)}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=10.0) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        return bool(result.get("has_audio", False))
 
     def stop(self) -> None:
         server = self._server

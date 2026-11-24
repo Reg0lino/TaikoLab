@@ -350,14 +350,14 @@ def build_course(
 
     plans = build_measure_plans(slots, effective_analysis, effective_rule_diff, cfg, overrides)
 
-    drum_cands = map_drum_hits(drum_hits, slots, plans, cfg)
-    vocal_cands = map_vocal_cadence(vocal_events, drum_hits, slots, plans, cfg)
+    drum_cands = map_drum_hits(drum_hits, slots, plans, cfg, overrides=overrides)
+    vocal_cands = map_vocal_cadence(vocal_events, drum_hits, slots, plans, cfg, overrides=overrides)
 
     combined = dict(drum_cands)
     combined.update(vocal_cands)
 
-    combined = weave_hybrid_vocal_hooks(combined, vocal_events, slots, plans, cfg)
-    fused = apply_guitar_fusion(combined, guitar_events, slots, plans, cfg)
+    combined = weave_hybrid_vocal_hooks(combined, vocal_events, slots, plans, cfg, overrides=overrides)
+    fused = apply_guitar_fusion(combined, guitar_events, slots, plans, cfg, overrides=overrides)
     variation_intensity = 0.0
     if overrides and effective_rule_diff in overrides.difficulty_overrides:
         variation_intensity = overrides.difficulty_overrides[effective_rule_diff].phrase_variation or 0.0
@@ -373,6 +373,16 @@ def build_course(
         fused, slots, plans, cfg, effective_rule_diff, analysis=effective_analysis
     )
     measures = apply_groove_triples(measures, drum_cands, plans, effective_rule_diff)
+
+    _color_flip = {
+        TaikoNote.DON.value: TaikoNote.KAT.value,
+        TaikoNote.KAT.value: TaikoNote.DON.value,
+        TaikoNote.BIG_DON.value: TaikoNote.BIG_KAT.value,
+        TaikoNote.BIG_KAT.value: TaikoNote.BIG_DON.value,
+    }
+    for measure, plan in zip(measures, plans):
+        if plan.invert_colors:
+            measure.notes = [_color_flip.get(n, n) for n in measure.notes]
 
     if overrides and overrides.note_edits:
         prefix = f"{difficulty}:"

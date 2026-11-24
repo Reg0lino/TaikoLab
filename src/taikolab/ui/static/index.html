@@ -18,9 +18,10 @@
     </div>
     <div class="top-controls">
       <label>Song
-        <select id="songSelect" title="Choose an analyzed song in the current workspace.">
+        <select id="songSelect" title="Choose an analyzed song or ★ Draft Project.">
         </select>
       </label>
+      <span id="songModeBadge" class="badge mode-badge-live">LIVE</span>
       <label>Stem Audio
         <select id="stemSelect">
           <option value="mix">Full Mix</option>
@@ -42,6 +43,9 @@
       <button type="button" id="btnToggleChartControls" title="Show or hide chart speed, sensitivity, density, and repeat-variation sliders.">Chart Sliders</button>
       <button type="button" id="btnSaveProject" title="Save work-in-progress to workspace/saved_projects/ without overwriting the live game TJA.">Save Project</button>
       <button type="button" id="btnOpenProject" title="Resume a saved project from workspace/saved_projects/.">Open Project&hellip;</button>
+      <input type="file" id="tjaAudioFileInput" accept=".ogg,.wav,.mp3,.flac" class="hidden" />
+      <button type="button" id="btnAttachTjaAudio" class="btn-warn hidden" title="Attach or replace the audio file for this imported TJA chart.">Attach Audio&hellip;</button>
+      <button type="button" id="btnDeleteSong" class="btn-danger" title="Remove this chart from workspace and YataiDON Songs (archives safely to _backups).">Delete Chart</button>
       <button id="btnExport" class="btn-primary">Export to YataiDON</button>
     </div>
   </header>
@@ -151,6 +155,14 @@
             <div class="ctrl-row">
               <input type="range" id="ctrlTripleRamp" min="0" max="100" step="5" value="50" />
               <button type="button" class="btn-xs" id="btnResetCtrlTripleRamp">Reset</button>
+            </div>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Groove Triple Max Hits/Bar (<span id="lblCtrlTripleMaxHits">6</span>)
+            <div class="ctrl-row">
+              <input type="range" id="ctrlTripleMaxHits" min="4" max="10" step="1" value="6" />
+              <button type="button" class="btn-xs" id="btnResetCtrlTripleMaxHits">Reset</button>
             </div>
           </label>
         </div>        <div class="ctrl-item">
@@ -408,7 +420,10 @@
         </div>
       </div>
       <div id="waveform" title="Click anywhere to seek to that exact time. Shift+Click a section or gold barline to snap to its start."></div>
-      <div class="hint" style="margin:6px 0 0 0">Click = seek exact spot &bull; Shift+Click section/barline = snap to start &bull; Drag gold line = move barline &bull; Double-click gold line = delete</div>
+      <div class="wave-footer">
+        <div class="hint" style="margin:0">Click = seek exact spot &bull; Shift+Click section/barline = snap to start &bull; Drag gold line = move barline &bull; Double-click gold line = delete</div>
+        <button type="button" id="btnOpenSectionMatrix" class="btn-matrix" title="Open the full Section Customizer table for all sliced sections while keeping your Grid warps and cuts intact.">Customize Sections Matrix&hellip;</button>
+      </div>
     </section>
 
     <!-- Bottom Grid: Section List + Selected Section Inspector -->
@@ -420,6 +435,7 @@
             <span class="hint">Click to jump</span>
           </div>
           <div class="section-list-actions">
+            <label class="inline-check" title="Off: split/drag at exact playhead time. On: snap section edges to nearest barline."><input type="checkbox" id="chkSnapSections" /> Snap Bars</label>
             <button type="button" id="btnAutoSplitSections" class="btn-accent" title="Automatically detect Intro, Verse, Chorus, and Break sections across the song.">Auto-Split</button>
             <button type="button" id="btnSplitAtPlayhead" class="btn-warn" title="Split the section at the nearest barline to the playhead.">Split Here</button>
             <button type="button" id="btnSectionFromSel" title="Create a bar-aligned section spanning your currently selected notes or rolls.">From Selection</button>
@@ -582,6 +598,97 @@
         <button type="button" id="btnSecDiffCurrent">Current Only</button>
         <button type="button" id="btnSecDiffAll">Check All</button>
         <button type="button" id="btnConfirmApplySection" class="btn-accent">Apply &amp; Rebuild</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Section Customizer Matrix Modal -->
+  <div id="sectionMatrixModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-card-wide">
+      <div class="modal-header">
+        <div>
+          <strong>Section Customizer Matrix</strong>
+          <span class="hint">Baseline values reflect Hard (or active course). Only modified rows overwrite the checked difficulties.</span>
+        </div>
+        <button type="button" id="btnCloseSectionMatrix">Close</button>
+      </div>
+
+      <div class="matrix-scope-bar">
+        <span class="label-sm"><strong>Target Difficulties:</strong></span>
+        <div id="matrixDiffTargets" class="checks-row" style="flex-wrap:wrap"></div>
+        <div class="matrix-scope-actions">
+          <button type="button" class="btn-xs" id="btnMatrixAllDiffs">All Present</button>
+          <button type="button" class="btn-xs" id="btnMatrixHardOni">Hard + Oni</button>
+          <button type="button" class="btn-xs" id="btnMatrixActiveOnly">Active Only</button>
+        </div>
+      </div>
+
+      <div class="matrix-table-wrap">
+        <table class="matrix-table">
+          <thead>
+            <tr>
+              <th>Section &amp; Timing</th>
+              <th>Rhythm Focus (Clear Sources)</th>
+              <th>Relative Speed</th>
+              <th>Density</th>
+              <th>Triples %</th>
+              <th>Triple Max Hits</th>
+              <th>Flip Colors</th>
+              <th>Jump</th>
+            </tr>
+          </thead>
+          <tbody id="sectionMatrixBody"></tbody>
+        </table>
+      </div>
+
+      <div class="modal-actions" style="justify-content:space-between; align-items:center">
+        <button type="button" id="btnResetSectionMatrix" class="btn-danger">Reset Section Customizations</button>
+        <div class="modal-actions">
+          <button type="button" id="btnPreviewSectionMatrix" class="btn-accent">Apply &amp; Preview in Lane</button>
+          <button type="button" id="btnSaveSectionMatrixPrompt" class="btn-primary">Save &amp; Export&hellip;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Save Sectioned Chart Prompt (Overwrite vs Save as New -s) -->
+  <div id="saveAsModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <strong>Save &amp; Export Sectioned Chart</strong>
+        <button type="button" id="btnCloseSaveAsModal">Cancel</button>
+      </div>
+      <div class="hint" style="margin-left:0">Choose whether to overwrite the current song or save a separate sectioned version (keeping the original intact in TaikoLab &amp; YataiDON).</div>
+      <label>New In-Game Title (for Save as New)
+        <input type="text" id="saveAsTitleInput" />
+      </label>
+      <label>New Song / Folder ID (for Save as New)
+        <input type="text" id="saveAsIdInput" class="mono" />
+      </label>
+      <div class="modal-actions">
+        <button type="button" id="btnMatrixOverwrite" class="btn-warn">Overwrite Current Chart</button>
+        <button type="button" id="btnMatrixSaveAsNew" class="btn-primary">Save as New (-s) &amp; Export</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Draft Confirmation Modal -->
+  <div id="exportDraftModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <strong>Export ★ Draft Project to YataiDON</strong>
+        <button type="button" id="btnCloseExportDraftModal">Cancel</button>
+      </div>
+      <div id="lblExportDraftNote" class="hint" style="margin-left:0"></div>
+      <label>New Song Title (for Export as New)
+        <input type="text" id="exportDraftTitleInput" />
+      </label>
+      <label>New Song / Folder ID (for Export as New)
+        <input type="text" id="exportDraftIdInput" class="mono" />
+      </label>
+      <div class="modal-actions">
+        <button type="button" id="btnExportDraftAsNew" class="btn-primary">Export as New Song</button>
+        <button type="button" id="btnExportDraftOverwrite" class="btn-warn">Overwrite Base Song</button>
       </div>
     </div>
   </div>

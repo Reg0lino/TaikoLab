@@ -137,6 +137,11 @@ class SectionDifficultyRule(BaseModel):
     enable_big_notes: bool = True
     fold_blasts_to_rolls: bool | None = None
     max_nps: float | None = Field(default=None, gt=0.5, le=30.0)
+    scroll_multiplier: float = Field(default=1.0, ge=0.25, le=3.0)
+    density_scale: float = Field(default=1.0, ge=0.30, le=1.50)
+    groove_triple_density: float | None = Field(default=None, ge=0.0, le=1.0)
+    groove_triple_max_hits: int | None = Field(default=None, ge=4, le=10)
+    invert_colors: bool = False
 
 
 class SectionOverride(BaseModel):
@@ -154,6 +159,11 @@ class SectionOverride(BaseModel):
     enable_big_notes: bool = True
     fold_blasts_to_rolls: bool | None = None
     max_nps: float | None = Field(default=None, gt=0.5, le=30.0)
+    scroll_multiplier: float = Field(default=1.0, ge=0.25, le=3.0)
+    density_scale: float = Field(default=1.0, ge=0.30, le=1.50)
+    groove_triple_density: float | None = Field(default=None, ge=0.0, le=1.0)
+    groove_triple_max_hits: int | None = Field(default=None, ge=4, le=10)
+    invert_colors: bool = False
     difficulty_rules: dict[DifficultyLevel, SectionDifficultyRule] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -192,6 +202,7 @@ class ChartControlSettings(BaseModel):
     groove_triple_complexity: float | None = Field(default=None, ge=0.0, le=1.0)
     groove_triple_ramp: float | None = Field(default=None, ge=0.0, le=1.0)
     groove_triple_max_bpm: float | None = Field(default=None, ge=120.0, le=300.0)
+    groove_triple_max_hits: int | None = Field(default=None, ge=4, le=10)
     section_phrase_variety: float | None = Field(default=None, ge=0.0, le=1.0)
     auto_section_on_build: bool | None = None
     enable_big_notes: bool | None = None

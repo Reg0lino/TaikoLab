@@ -289,7 +289,7 @@ def _parse_midi_unified(
         is_guitar_track = any(k in t_name for k in _GUITAR_KEYWORDS) or (24 <= prog <= 39)
 
         if is_vocal_track or ((not is_guitar_track) and ((80 <= prog <= 87) or (52 <= prog <= 55))):
-            if (s_sec - last_vocal_t) >= 0.045:
+            if (s_sec - last_vocal_t) >= 0.090:
                 last_vocal_t = s_sec
                 hz = 440.0 * (2.0 ** ((pitch - 69) / 12.0))
                 vocals.append(
@@ -793,7 +793,8 @@ def _repair_broken_dtw_regions_with_drums(
         cur_matches = _score_shift(_window_pairs(w0, w1, use_raw=False), 0.0, tol=0.038)
         best_lag = ref_lag
         best_c = -1
-        for cand_lag in np.arange(ref_lag - 1.25, ref_lag + 1.255, 0.015):
+        search_span = 4.0 if (not healthy_centers or cur_rate < 0.35) else 1.50
+        for cand_lag in np.arange(ref_lag - search_span, ref_lag + search_span + 0.005, 0.015):
             c = _score_shift(pairs_raw, float(cand_lag), tol=0.035)
             if c > best_c or (c == best_c and abs(cand_lag - ref_lag) < abs(best_lag - ref_lag)):
                 best_c, best_lag = c, float(cand_lag)
@@ -1058,19 +1059,35 @@ def _align_via_synctoolbox(
     m_ks = np.array(sorted(h.time_sec for h in midi_drums if h.drum_class in ("kick", "snare")), dtype=np.float64)
     r_ks = np.array(sorted(h.time_sec for h in real_drums if h.drum_class in ("kick", "snare")), dtype=np.float64)
 
-    # Project first and last solid drum groove through quiet guitar intro/outro (fixes Verse 1 & Outro drift)
+    init_matches, init_total = _score_drum_warp(midi_drums, real_drums, knots_m, knots_a, tolerance_sec=0.038)
+    init_pct = (init_matches / float(init_total)) if init_total else 1.0
+    if init_pct < 0.58:
+        knots_m, knots_a, repaired_dtw_wins = _repair_broken_dtw_regions_with_drums(
+            knots_m,
+            knots_a,
+            midi_drums,
+            real_drums,
+            first_note_t,
+            last_note_t,
+        )
+        if repaired_dtw_wins:
+            print(f"[TaikoLab TabSync] Gross DTW repair rescued {repaired_dtw_wins} region(s) (init match was {init_pct * 100:.1f}%).")
+
     if len(m_ks) >= 12 and len(r_ks) >= 12:
         m_intro = m_ks[:min(18, len(m_ks))]
         first_drum_t = float(m_intro[0])
-        intro_candidates = r_ks[:min(40, len(r_ks))]
-        best_intro_lag = float(np.interp(first_drum_t, knots_m, knots_a) - first_drum_t)
+        cur_intro_lag = float(np.interp(first_drum_t, knots_m, knots_a) - first_drum_t)
+        intro_candidates = r_ks[(r_ks >= first_drum_t - 5.0) & (r_ks <= m_intro[-1] + 5.0)]
+        if len(intro_candidates) == 0:
+            intro_candidates = r_ks[:min(60, len(r_ks))]
+        best_intro_lag = cur_intro_lag
         best_sc = -1
-        for cand_lag in np.arange(best_intro_lag - 0.45, best_intro_lag + 0.455, 0.005):
+        for cand_lag in np.arange(cur_intro_lag - 0.65, cur_intro_lag + 0.655, 0.005):
             sh = m_intro + cand_lag
             idx = np.searchsorted(intro_candidates, sh)
             d1 = np.abs(intro_candidates[np.minimum(idx, len(intro_candidates) - 1)] - sh)
             d0 = np.abs(intro_candidates[np.maximum(idx - 1, 0)] - sh)
-            sc = int(np.sum(np.minimum(d1, d0) <= 0.030))
+            sc = int(np.sum(np.minimum(d1, d0) <= 0.032))
             if sc > best_sc:
                 best_sc, best_intro_lag = sc, float(cand_lag)
 
@@ -1096,21 +1113,6 @@ def _align_via_synctoolbox(
                 knots_a[i] = tm + lag_in
             elif tm > anchor_out_t:
                 knots_a[i] = tm + lag_out
-
-    # Only run gross DTW replacement if initial match rate is under 55% (preserves already-locked songs)
-    init_matches, init_total = _score_drum_warp(midi_drums, real_drums, knots_m, knots_a, tolerance_sec=0.038)
-    init_pct = (init_matches / float(init_total)) if init_total else 1.0
-    if init_pct < 0.55:
-        knots_m, knots_a, repaired_dtw_wins = _repair_broken_dtw_regions_with_drums(
-            knots_m,
-            knots_a,
-            midi_drums,
-            real_drums,
-            first_note_t,
-            last_note_t,
-        )
-        if repaired_dtw_wins:
-            print(f"[TaikoLab TabSync] Gross DTW repair rescued {repaired_dtw_wins} region(s) (init match was {init_pct * 100:.1f}%).")
 
     # Continuous sliding-window drum transient alignment (step 2.0s, window 8.0s)
     if len(m_ks) >= 10 and len(r_ks) >= 10:

@@ -33,6 +33,10 @@ class MeasurePlan:
     cymbal_sensitivity: float = 1.0
     gp_accent: bool = False
     gp_tremolo: bool = False
+    scroll_multiplier: float = 1.0
+    density_scale: float = 1.0
+    groove_triple_max_hits: int = 6
+    invert_colors: bool = False
 
 
 def _default_mode_for_difficulty(difficulty: DifficultyLevel, cfg: AppConfig) -> FollowMode:
@@ -41,6 +45,20 @@ def _default_mode_for_difficulty(difficulty: DifficultyLevel, cfg: AppConfig) ->
     if difficulty == "hard":
         return cfg.preset.hard_follow_mode
     return cfg.preset.oni_follow_mode
+
+
+def resolve_follow_mode_at_time(
+    time_sec: float,
+    plan: MeasurePlan,
+    overrides: SongOverrides | None,
+) -> FollowMode:
+    """Resolve section follow_mode at exact hit timestamp (supports mid-measure section splits)."""
+    ov = _find_section_override(time_sec, overrides)
+    if ov is None:
+        return plan.follow_mode
+    rule = ov.difficulty_rules.get(plan.difficulty)
+    mode = rule.follow_mode if rule is not None else ov.follow_mode
+    return mode if mode != "auto" else plan.follow_mode
 
 
 def _find_section_override(time_sec: float, overrides: SongOverrides | None) -> SectionOverride | None:
@@ -114,6 +132,11 @@ def build_measure_plans(
         overrides.groove_triple_max_bpm
         if overrides and overrides.groove_triple_max_bpm is not None
         else 235.0
+    )
+    base_triple_max_hits = (
+        overrides.groove_triple_max_hits
+        if overrides and overrides.groove_triple_max_hits is not None
+        else 6
     )
     quiet_guitar_threshold = cfg.settings.quiet_guitar_rms_threshold
     quiet_guitar_behavior = "downbeat"
@@ -197,29 +220,33 @@ def build_measure_plans(
             else cfg.preset.fold_blasts_to_rolls
         )
         max_nps = base_max_nps
+        sec_scroll_mult = 1.0
+        sec_density_scale = 1.0
+        sec_triple_density = groove_triple_density
+        sec_triple_max_hits = base_triple_max_hits
+        sec_invert_colors = False
 
         if ov is not None:
             diff_rule = ov.difficulty_rules.get(difficulty)
-            if diff_rule is not None:
-                if diff_rule.follow_mode != "auto":
-                    mode = diff_rule.follow_mode
-                drum_sens = diff_rule.drum_sensitivity
-                vocal_sens = diff_rule.vocal_sensitivity
-                enable_big = diff_rule.enable_big_notes
-                if diff_rule.fold_blasts_to_rolls is not None:
-                    fold_blasts = diff_rule.fold_blasts_to_rolls
-                if diff_rule.max_nps is not None:
-                    max_nps = min(base_max_nps, diff_rule.max_nps) if difficulty == "easy" else diff_rule.max_nps
-            else:
-                if ov.follow_mode != "auto":
-                    mode = ov.follow_mode
-                drum_sens = ov.drum_sensitivity
-                vocal_sens = ov.vocal_sensitivity
-                enable_big = ov.enable_big_notes
-                if ov.fold_blasts_to_rolls is not None:
-                    fold_blasts = ov.fold_blasts_to_rolls
-                if ov.max_nps is not None:
-                    max_nps = min(base_max_nps, ov.max_nps) if difficulty == "easy" else ov.max_nps
+            rule_obj = diff_rule if diff_rule is not None else ov
+            if rule_obj.follow_mode != "auto":
+                mode = rule_obj.follow_mode
+            drum_sens = rule_obj.drum_sensitivity
+            vocal_sens = rule_obj.vocal_sensitivity
+            enable_big = rule_obj.enable_big_notes
+            if rule_obj.fold_blasts_to_rolls is not None:
+                fold_blasts = rule_obj.fold_blasts_to_rolls
+            if rule_obj.max_nps is not None:
+                max_nps = min(base_max_nps, rule_obj.max_nps) if difficulty == "easy" else rule_obj.max_nps
+            sec_scroll_mult = rule_obj.scroll_multiplier
+            sec_density_scale = rule_obj.density_scale
+            if abs(sec_density_scale - 1.0) > 1e-4:
+                max_nps = max(0.5, max_nps * sec_density_scale)
+            if rule_obj.groove_triple_density is not None:
+                sec_triple_density = rule_obj.groove_triple_density
+            if rule_obj.groove_triple_max_hits is not None:
+                sec_triple_max_hits = rule_obj.groove_triple_max_hits
+            sec_invert_colors = bool(rule_obj.invert_colors)
 
         plans.append(
             MeasurePlan(
@@ -236,7 +263,7 @@ def build_measure_plans(
                 low_energy_guitar=low_energy_guitar and mode in ("guitar", "hybrid"),
                 quiet_guitar_behavior=quiet_guitar_behavior,
                 max_fill_rolls=max_fill_rolls,
-                groove_triple_density=groove_triple_density,
+                groove_triple_density=sec_triple_density,
                 max_groove_triples=max_groove_triples,
                 groove_triple_complexity=groove_triple_complexity,
                 groove_triple_ramp=groove_triple_ramp,
@@ -245,6 +272,10 @@ def build_measure_plans(
                 cymbal_sensitivity=(overrides.cymbal_sensitivity if overrides and overrides.cymbal_sensitivity is not None else 1.0),
                 gp_accent=bool(analysis.gp_hints and s.measure_idx in analysis.gp_hints.accent_bars),
                 gp_tremolo=bool(analysis.gp_hints and s.measure_idx in analysis.gp_hints.tremolo_bars),
+                scroll_multiplier=sec_scroll_mult,
+                density_scale=sec_density_scale,
+                groove_triple_max_hits=sec_triple_max_hits,
+                invert_colors=sec_invert_colors,
             )
         )
 

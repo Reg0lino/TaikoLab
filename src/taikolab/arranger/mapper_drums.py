@@ -6,9 +6,9 @@ from bisect import bisect_left
 from dataclasses import dataclass
 
 from taikolab.arranger.quantizer import MeasureSlot, time_to_measure_slot
-from taikolab.arranger.section_builder import MeasurePlan
+from taikolab.arranger.section_builder import MeasurePlan, resolve_follow_mode_at_time
 from taikolab.config import AppConfig
-from taikolab.schemas import DrumHit, TaikoNote, TaikoTarget
+from taikolab.schemas import DrumHit, SongOverrides, TaikoNote, TaikoTarget
 
 _HIGH_TOM_PITCHES = frozenset({47, 48, 50})
 _LOW_TOM_PITCHES = frozenset({41, 43, 45})
@@ -303,6 +303,7 @@ def map_drum_hits(
     slots: list[MeasureSlot],
     plans: list[MeasurePlan],
     cfg: AppConfig,
+    overrides: SongOverrides | None = None,
 ) -> dict[tuple[int, int], PlacedCandidate]:
     """Map DrumHits onto cells with Hands-Over-Feet fills, tom-pitch, and solo cymbal intelligence."""
     clean_hits = _merge_flam_drum_hits(drum_hits)
@@ -317,7 +318,7 @@ def map_drum_hits(
         m_idx, s_idx = loc
         plan = plans[m_idx]
 
-        if plan.follow_mode in ("vocals", "guitar", "vocals_guitar"):
+        if resolve_follow_mode_at_time(hit.time_sec, plan, overrides) in ("vocals", "guitar", "vocals_guitar"):
             continue
 
         if plan.cymbal_sensitivity <= 0.01:

@@ -383,6 +383,9 @@ def build_ergonomic_measures_with_balloons(
         bar_dict = filtered_by_measure[m_idx]
         bar_dur = max(0.05, slot.end_sec - slot.start_sec)
         max_notes = max(1, int(round(plan.max_nps * bar_dur)))
+        if plan.density_scale < 0.999 and len(bar_dict) > 1:
+            scaled_target = max(1, int(round(len(bar_dict) * plan.density_scale)))
+            max_notes = min(max_notes, scaled_target)
 
         while len(bar_dict) > max_notes:
             worst_key = min(
@@ -416,7 +419,7 @@ def build_ergonomic_measures_with_balloons(
                 bpm=slot.bpm,
                 numerator=slot.numerator,
                 denominator=slot.denominator,
-                scroll=1.0,
+                scroll=round(max(0.25, min(3.0, plans[m_idx].scroll_multiplier)), 4),
                 notes=grid,
             )
         )
