@@ -174,6 +174,29 @@
           </label>
         </div>
         <div class="ctrl-item">
+          <label>Default Phrasing Blend
+            <select id="ctrlDefaultBlendStyle">
+              <option value="simultaneous">Simultaneous (Layered)</option>
+              <option value="alt_2bar">Alternating 2-Bar</option>
+              <option value="alt_4bar">Alternating 4-Bar</option>
+              <option value="adaptive">Adaptive (Phrase-Aware)</option>
+            </select>
+          </label>
+        </div>
+        <div class="ctrl-item">
+          <label>Default Lead Source
+            <select id="ctrlDefaultPhrasingLead">
+              <option value="auto">Auto</option>
+              <option value="vocals">Vocals Lead</option>
+              <option value="drums">Drums Lead</option>
+              <option value="instruments">Instruments Lead</option>
+            </select>
+          </label>
+        </div>
+        <div class="ctrl-item checks-row">
+          <label class="inline-check" title="Apply alternation only to Verses/Breaks, keeping Choruses dense and layered."><input type="checkbox" id="ctrlSelectivePhraseParts" /> Selective Parts (Chorus Dense)</label>
+        </div>
+        <div class="ctrl-item">
           <label>Vocal Onset Threshold (<span id="lblCtrlVocalMin">0.36</span>)
             <div class="ctrl-row">
               <input type="range" id="ctrlVocalMin" min="0.15" max="0.85" step="0.03" value="0.36" />
@@ -241,6 +264,10 @@
         </label>
         <label class="mixer-lbl">Music <input type="range" id="musicVol" min="0" max="1" step="0.05" value="0.55" /> <span id="lblMusicVol">55%</span></label>
         <label class="mixer-lbl">Hits <input type="range" id="hitVol" min="0" max="5" step="0.05" value="1.35" /> <span id="lblHitVol">135%</span></label>
+        <label class="mixer-lbl" title="Push (+) or pull (-) chart hit clicks in 1 ms steps to calibrate audio/visual sync without changing chart data.">Click Offset
+          <input type="number" id="hitClickOffsetMs" min="-250" max="250" step="1" value="0" style="width:58px" />
+          <span>ms</span>
+        </label>
         <label title="Slow playback to inspect timing. Playback speed does not alter chart timing.">Speed
           <select id="speedSelect">
             <option value="0.5">0.50x</option>
@@ -304,6 +331,7 @@
         </div>
         <div class="lane-tools">
           <label title="Increase the horizontal time scale to edit a smaller passage; decrease it to see more of the song.">Lane Zoom <input type="range" id="laneZoom" min="180" max="620" value="340" /></label>
+          <label title="Adjust global in-game highway scroll speed (#SCROLL) after initial pipeline build.">Highway Speed <input type="range" id="laneHighwaySpeed" min="70" max="280" step="1" value="101" style="width:92px" /> <span id="lblLaneSpeed" class="mono">101</span></label>
           <label class="inline-check" title="On: snap edits to the selected musical grid. Off: use a 1/64-measure placement grid; exported TJA still requires representable measure subdivisions.">
             <input type="checkbox" id="snapToggle" checked /> Snap
           </label>
@@ -477,6 +505,20 @@
               <option value="all_balanced">All Balanced (Drums Lead)</option>
               <option value="chaos_roll">Chaos Drumroll</option>
             </select>
+            <div class="row-inline" style="margin-top:4px">
+              <select id="secBlendStyle" title="Simultaneous layered blend vs Alternating call-and-response">
+                <option value="simultaneous">Blend: Simultaneous</option>
+                <option value="alt_2bar">Blend: Alt 2-Bar</option>
+                <option value="alt_4bar">Blend: Alt 4-Bar</option>
+                <option value="adaptive">Blend: Adaptive</option>
+              </select>
+              <select id="secPhrasingLead" title="Which source takes the lead first when alternating">
+                <option value="auto">Lead: Auto</option>
+                <option value="vocals">Lead: Vocals</option>
+                <option value="drums">Lead: Drums</option>
+                <option value="instruments">Lead: Instruments</option>
+              </select>
+            </div>
           </div>
           <label>Section Timing Shift (ms)
             <div class="row-inline">
@@ -629,6 +671,7 @@
             <tr>
               <th>Section &amp; Timing</th>
               <th>Rhythm Focus (Clear Sources)</th>
+              <th>Phrasing / Blend</th>
               <th>Relative Speed</th>
               <th>Density</th>
               <th>Triples %</th>

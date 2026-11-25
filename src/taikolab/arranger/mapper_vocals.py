@@ -78,6 +78,8 @@ def map_vocal_cadence(
         m_idx, s_idx = loc
         if resolve_follow_mode_at_time(hit.time_sec, plans[m_idx], overrides) != "vocals":
             continue
+        if plans[m_idx].blend_style != "simultaneous" and vocal_count_by_bar.get(m_idx, 0) > 0:
+            continue
         if vocal_count_by_bar.get(m_idx, 0) > 2:
             continue
         key = (m_idx, s_idx)

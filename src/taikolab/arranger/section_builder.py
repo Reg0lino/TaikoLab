@@ -1,4 +1,4 @@
-"""Automatic section classification and user override resolution."""
+"""Automatic section classification, phrase alternation, and user override resolution."""
 
 from __future__ import annotations
 
@@ -6,7 +6,16 @@ from dataclasses import dataclass
 
 from taikolab.arranger.quantizer import MeasureSlot
 from taikolab.config import AppConfig
-from taikolab.schemas import DifficultyLevel, FollowMode, SectionDifficultyRule, SectionOverride, SongAnalysis, SongOverrides
+from taikolab.schemas import (
+    BlendStyle,
+    DifficultyLevel,
+    FollowMode,
+    PhrasingLead,
+    SectionDifficultyRule,
+    SectionOverride,
+    SongAnalysis,
+    SongOverrides,
+)
 
 
 @dataclass
@@ -37,6 +46,8 @@ class MeasurePlan:
     density_scale: float = 1.0
     groove_triple_max_hits: int = 6
     invert_colors: bool = False
+    blend_style: BlendStyle = "simultaneous"
+    phrasing_lead: PhrasingLead = "auto"
 
 
 def _default_mode_for_difficulty(difficulty: DifficultyLevel, cfg: AppConfig) -> FollowMode:
@@ -52,7 +63,9 @@ def resolve_follow_mode_at_time(
     plan: MeasurePlan,
     overrides: SongOverrides | None,
 ) -> FollowMode:
-    """Resolve section follow_mode at exact hit timestamp (supports mid-measure section splits)."""
+    """Resolve section follow_mode at exact hit timestamp (supports mid-measure section splits & alternating phrases)."""
+    if plan.blend_style != "simultaneous":
+        return plan.follow_mode
     ov = _find_section_override(time_sec, overrides)
     if ov is None:
         return plan.follow_mode
@@ -193,7 +206,6 @@ def build_measure_plans(
                 mode = "hybrid" if difficulty in ("oni", "ura") else "drums"
 
         has_timekeeping_cymbals = difficulty != "easy" and len(bar_cymbals) >= 2
-        # Keep rhythms fluid: avoid dead bars when vocals or drums briefly drop out.
         if difficulty in ("easy", "normal") and mode == "vocals" and len(bar_vocals) < 2:
             if len(bar_drums) >= 2 or has_timekeeping_cymbals:
                 mode = "drums"
@@ -225,6 +237,8 @@ def build_measure_plans(
         sec_triple_density = groove_triple_density
         sec_triple_max_hits = base_triple_max_hits
         sec_invert_colors = False
+        sec_blend: BlendStyle = "simultaneous"
+        sec_lead: PhrasingLead = "auto"
 
         if ov is not None:
             diff_rule = ov.difficulty_rules.get(difficulty)
@@ -247,6 +261,13 @@ def build_measure_plans(
             if rule_obj.groove_triple_max_hits is not None:
                 sec_triple_max_hits = rule_obj.groove_triple_max_hits
             sec_invert_colors = bool(rule_obj.invert_colors)
+            sec_blend = getattr(rule_obj, "blend_style", "simultaneous")
+            sec_lead = getattr(rule_obj, "phrasing_lead", "auto")
+
+        if sec_blend == "simultaneous" and overrides and overrides.default_blend_style:
+            sec_blend = overrides.default_blend_style
+        if sec_lead == "auto" and overrides and overrides.default_phrasing_lead:
+            sec_lead = overrides.default_phrasing_lead
 
         plans.append(
             MeasurePlan(
@@ -276,8 +297,12 @@ def build_measure_plans(
                 density_scale=sec_density_scale,
                 groove_triple_max_hits=sec_triple_max_hits,
                 invert_colors=sec_invert_colors,
+                blend_style=sec_blend,
+                phrasing_lead=sec_lead,
             )
         )
+
+    _apply_phrase_alternation(plans, slots, analysis, difficulty, overrides)
 
     variety = (
         overrides.section_phrase_variety
@@ -286,6 +311,140 @@ def build_measure_plans(
     )
     _apply_section_phrase_variation(plans, slots, analysis, difficulty, overrides, variety)
     return plans
+
+
+def _apply_phrase_alternation(
+    plans: list[MeasurePlan],
+    slots: list[MeasureSlot],
+    analysis: SongAnalysis,
+    difficulty: DifficultyLevel,
+    overrides: SongOverrides | None,
+) -> None:
+    """Intelligently alternate focus (e.g. 2-bar/4-bar vocal lead <-> drum groove) in blended sections."""
+    if not plans or not slots:
+        return
+
+    sections = overrides.sections if overrides and overrides.sections else []
+    ranges: list[tuple[int, int, SectionOverride | None]] = []
+    if sections:
+        for sec in sections:
+            idxs = [
+                i for i, s in enumerate(slots)
+                if sec.start_sec <= 0.5 * (s.start_sec + s.end_sec) < sec.end_sec
+            ]
+            if idxs:
+                ranges.append((idxs[0], idxs[-1] + 1, sec))
+    else:
+        ranges = [(0, len(slots), None)]
+
+    for r_start, r_end, sec_ov in ranges:
+        if r_end <= r_start:
+            continue
+
+        rule_obj = None
+        if sec_ov is not None:
+            rule_obj = sec_ov.difficulty_rules.get(difficulty) or sec_ov
+
+        sec_blend = getattr(rule_obj, "blend_style", "simultaneous") if rule_obj else "simultaneous"
+        if sec_blend == "simultaneous" and overrides and overrides.default_blend_style:
+            sec_blend = overrides.default_blend_style
+
+        if sec_blend == "simultaneous":
+            continue
+
+        is_selective = (
+            overrides.selective_phrase_parts
+            if overrides and overrides.selective_phrase_parts is not None
+            else False
+        )
+        if is_selective and sec_ov is not None and (rule_obj is None or getattr(rule_obj, "blend_style", "simultaneous") == "simultaneous"):
+            lbl = (sec_ov.label or "").lower()
+            if any(tag in lbl for tag in ("chorus", "drive", "outro", "climax")):
+                continue
+
+        base_mode = plans[r_start].follow_mode
+        if base_mode not in ("drums_vocals", "hybrid", "vocals_guitar", "all_balanced"):
+            continue
+
+        if base_mode == "drums_vocals":
+            voice_a, voice_b = "vocals", "drums"
+        elif base_mode == "hybrid":
+            voice_a, voice_b = "guitar", "drums"
+        elif base_mode == "vocals_guitar":
+            voice_a, voice_b = "vocals", "guitar"
+        else:
+            voice_a, voice_b = "vocals", "drums"
+
+        lead_pref = getattr(rule_obj, "phrasing_lead", "auto") if rule_obj else "auto"
+        if lead_pref == "auto" and overrides and overrides.default_phrasing_lead:
+            lead_pref = overrides.default_phrasing_lead
+
+        lead_voice = voice_a
+        response_voice = voice_b
+
+        if lead_pref == "vocals":
+            lead_voice = "vocals"
+            response_voice = "drums" if voice_b == "drums" else "guitar"
+        elif lead_pref == "drums":
+            lead_voice = "drums"
+            response_voice = "vocals" if voice_a == "vocals" else "guitar"
+        elif lead_pref == "instruments":
+            lead_voice = "guitar"
+            response_voice = "drums" if voice_b == "drums" else "vocals"
+        else:
+            first_2_end = slots[min(r_end - 1, r_start + 1)].end_sec
+            first_start = slots[r_start].start_sec
+            if voice_a == "vocals":
+                v_open = sum(1 for v in analysis.vocal_events if first_start <= v.time_sec < first_2_end)
+                if v_open == 0:
+                    lead_voice, response_voice = voice_b, voice_a
+            elif voice_a == "guitar":
+                g_open = sum(1 for g in analysis.guitar_events if first_start <= g.time_sec < first_2_end)
+                if g_open == 0:
+                    lead_voice, response_voice = voice_b, voice_a
+
+        for m_pos, m_idx in enumerate(range(r_start, r_end)):
+            plan = plans[m_idx]
+            slot = slots[m_idx]
+            plan.blend_style = sec_blend
+            plan.phrasing_lead = lead_pref
+
+            if sec_blend == "alt_2bar":
+                block_idx = m_pos // 2
+                target_voice = lead_voice if (block_idx % 2 == 0) else response_voice
+            elif sec_blend == "alt_4bar":
+                block_idx = m_pos // 4
+                target_voice = lead_voice if (block_idx % 2 == 0) else response_voice
+            elif sec_blend == "adaptive":
+                if lead_voice == "vocals":
+                    v_bar = sum(1 for v in analysis.vocal_events if slot.start_sec <= v.time_sec < slot.end_sec)
+                    target_voice = lead_voice if v_bar > 0 else response_voice
+                elif lead_voice == "guitar":
+                    g_bar = sum(1 for g in analysis.guitar_events if slot.start_sec <= g.time_sec < slot.end_sec)
+                    target_voice = lead_voice if g_bar > 0 else response_voice
+                else:
+                    d_bar = sum(1 for d in analysis.drum_hits if slot.start_sec <= d.time_sec < slot.end_sec and d.drum_class not in ("hihat", "ride"))
+                    target_voice = lead_voice if d_bar > 0 else response_voice
+            else:
+                target_voice = base_mode
+
+            # Strict guardrail with natural breathing space:
+            other_voice = response_voice if target_voice == lead_voice else lead_voice
+            if target_voice == "vocals":
+                v_count = sum(1 for v in analysis.vocal_events if slot.start_sec <= v.time_sec < slot.end_sec)
+                if v_count >= 1:
+                    plan.follow_mode = "vocals"
+                else:
+                    plan.follow_mode = other_voice
+            elif target_voice == "guitar":
+                g_count = sum(1 for g in analysis.guitar_events if slot.start_sec <= g.time_sec < slot.end_sec)
+                if g_count >= 1:
+                    plan.follow_mode = "guitar"
+                else:
+                    plan.follow_mode = other_voice
+            else:
+                plan.follow_mode = target_voice
+
 
 def _rules_for_section_role(role: str, has_vocals: bool, has_drums: bool) -> tuple[FollowMode, dict[DifficultyLevel, SectionDifficultyRule]]:
     if role == "intro":
@@ -457,7 +616,6 @@ def _apply_section_phrase_variation(
             b1 = min(r_end, b0 + block_len)
             if (b1 - b0) < 2:
                 continue
-            # Rotate only on alternate blocks at low/mid variety, or every non-first block at high variety
             if variety < 0.50 and (block_idx % 2 == 0):
                 continue
             if block_idx == 0:
@@ -479,8 +637,9 @@ def _apply_section_phrase_variation(
             n_bars = b1 - b0
             if any(plans[k].low_energy_guitar for k in range(b0, b1)):
                 continue
+            if any(plans[k].blend_style != "simultaneous" for k in range(b0, b1)):
+                continue
 
-            # Pick an active call-and-response source that differs from current block mode
             cur_mode = plans[b0].follow_mode
             chosen: FollowMode | None = None
             if (block_idx % 3 == 1) and v_count >= n_bars * 2 and cur_mode != "vocals":

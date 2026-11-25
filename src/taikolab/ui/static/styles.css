@@ -420,7 +420,7 @@ body.imported-tja #btnOpenSectionMatrix { display: none; }
 }
 .btn-matrix:hover { filter: brightness(1.08); }
 .modal-card-wide {
-  width: min(1240px, 98vw);
+  width: min(1360px, 98vw);
   max-height: 90vh;
 }
 .matrix-scope-bar {
@@ -463,6 +463,12 @@ body.imported-tja #btnOpenSectionMatrix { display: none; }
 }
 .matrix-table tr.matrix-row-dirty {
   background: rgba(44, 168, 232, 0.08);
+}
+.matrix-blend-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 155px;
 }
 .matrix-focus-cell {
   display: flex;

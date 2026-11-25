@@ -138,6 +138,7 @@ def save_wizard_preferences(
     ingest_mode: str | None = None,
     demucs_model: str | None = None,
     slider_profiles: dict[str, dict[str, object]] | None = None,
+    hit_click_offset_ms: float | None = None,
 ) -> Path:
     """Persist desktop-only settings without rewriting the commented YAML config."""
     prefs_path = root_dir / "configs" / "wizard_settings.json"
@@ -164,6 +165,8 @@ def save_wizard_preferences(
         preferences["demucs_model"] = demucs_model
     if slider_profiles is not None:
         preferences["slider_profiles"] = slider_profiles
+    if hit_click_offset_ms is not None:
+        preferences["hit_click_offset_ms"] = float(hit_click_offset_ms)
 
     temp_path = prefs_path.with_suffix(".json.tmp")
     temp_path.write_text(json.dumps(preferences, indent=2) + "\n", encoding="utf-8")

@@ -336,10 +336,40 @@ class TaikoWizard:
             )
             for difficulty in ("hard", "oni")
         }
+        self._blend_mode_labels = {
+            "simultaneous": "Simultaneous (Layered)",
+            "alt_2bar": "Alternating 2-Bar (Call & Resp)",
+            "alt_4bar": "Alternating 4-Bar (Call & Resp)",
+            "adaptive": "Adaptive (Phrase-Aware)",
+        }
+        self._blend_label_to_mode = {v: k for k, v in self._blend_mode_labels.items()}
+        _saved_blend = chart_controls.default_blend_style or "simultaneous"
+        self.default_blend_style = tk.StringVar(
+            value=self._blend_mode_labels.get(_saved_blend, "Simultaneous (Layered)")
+        )
+        self._lead_source_labels = {
+            "auto": "Auto",
+            "vocals": "Vocals Lead",
+            "drums": "Drums Lead",
+            "instruments": "Instruments Lead",
+        }
+        self._lead_label_to_mode = {v: k for k, v in self._lead_source_labels.items()}
+        _saved_lead = chart_controls.default_phrasing_lead or "auto"
+        self.default_phrasing_lead = tk.StringVar(
+            value=self._lead_source_labels.get(_saved_lead, "Auto")
+        )
+        self.selective_phrase_parts = tk.BooleanVar(
+            value=bool(chart_controls.selective_phrase_parts)
+            if chart_controls.selective_phrase_parts is not None
+            else False
+        )
         source_labels = {
             "auto": "Automatic",
             "drums": "Drums",
             "hybrid": "Balanced",
+            "drums_vocals": "Drums + Vocals",
+            "vocals_guitar": "Vocals + Inst",
+            "all_balanced": "All Balanced",
             "vocals": "Vocals",
             "guitar": "Guitar",
         }
@@ -479,8 +509,22 @@ class TaikoWizard:
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(8, weight=1)
 
-        ttk.Label(outer, text="TaikoLab Auto Chart Builder", style="Title.TLabel").grid(
+        header_row = ttk.Frame(outer)
+        header_row.grid(row=0, column=0, sticky="ew")
+        header_row.columnconfigure(0, weight=1)
+        ttk.Label(header_row, text="TaikoLab Auto Chart Builder", style="Title.TLabel").grid(
             row=0, column=0, sticky="w"
+        )
+        self.top_editor_button = ttk.Button(
+            header_row,
+            text="Open Manual Editor",
+            command=self._open_last_editor,
+        )
+        self.top_editor_button.grid(row=0, column=1, sticky="e")
+        ToolTip(
+            self.top_editor_button,
+            "Open the last built chart, or open the editor now and choose an existing .tja file. "
+            "No new chart build is required to edit an existing file.",
         )
         ttk.Label(
             outer,
@@ -581,14 +625,86 @@ class TaikoWizard:
         ttk.Label(options, text="3  Chart controls and destination", style="Section.TLabel").grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 8)
         )
-        ttk.Label(options, text="Chart controls", style="Muted.TLabel").grid(
-            row=1, column=0, columnspan=4, sticky="w", pady=(0, 4)
+        prof_row = ttk.Frame(options, style="Surface.TFrame")
+        prof_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+        ttk.Label(prof_row, text="Saved Slider Profile").pack(side="left", padx=(0, 8))
+        self.slider_profile_box = ttk.Combobox(
+            prof_row,
+            textvariable=self.selected_slider_profile,
+            values=sorted(self.saved_profiles.keys()),
+            width=24,
         )
-        controls = ttk.Frame(options, style="Surface.TFrame")
-        controls.grid(row=2, column=0, columnspan=4, sticky="ew")
-        controls.columnconfigure(1, weight=1)
+        self.slider_profile_box.pack(side="left", padx=(0, 6))
+        ttk.Button(prof_row, text="Load", command=self._load_slider_profile).pack(side="left", padx=(0, 4))
+        ttk.Button(prof_row, text="Save", command=self._save_slider_profile).pack(side="left", padx=(0, 4))
+        ttk.Button(prof_row, text="Delete", command=self._delete_slider_profile).pack(side="left")
+
+        # --- Drawer 1: Phrasing, Blend & Course Sources (Expanded by default) ---
+        sec_phrasing = self._make_collapsible_section(
+            options, row=2, title="Phrasing, Blend & Course Sources", expanded=True
+        )
+        ttk.Label(sec_phrasing, text="Default phrasing blend").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Combobox(
+            sec_phrasing,
+            textvariable=self.default_blend_style,
+            values=tuple(self._blend_mode_labels.values()),
+            state="readonly",
+            width=30,
+        ).grid(row=0, column=1, columnspan=2, sticky="w")
+        ttk.Label(sec_phrasing, text="Default lead source").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=(4, 0))
+        ttk.Combobox(
+            sec_phrasing,
+            textvariable=self.default_phrasing_lead,
+            values=tuple(self._lead_source_labels.values()),
+            state="readonly",
+            width=22,
+        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(
+            sec_phrasing,
+            text="Selective parts (alternate Verses/Breaks, keep Choruses dense & layered)",
+            variable=self.selective_phrase_parts,
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 4))
         self._add_slider(
-            controls,
+            sec_phrasing,
+            3,
+            "Section phrase variety (stem rotation)",
+            self.section_phrase_variety,
+            0,
+            100,
+            5,
+            "{:.0f}%",
+            default_value=35.0,
+        )
+        ttk.Label(sec_phrasing, text="Source followed by each course", style="Muted.TLabel").grid(
+            row=4, column=0, columnspan=4, sticky="w", pady=(8, 2)
+        )
+        for idx_c, difficulty in enumerate(("easy", "normal", "hard", "oni"), start=5):
+            ttk.Label(sec_phrasing, text=difficulty.title()).grid(
+                row=idx_c, column=0, sticky="w", padx=(0, 10), pady=1
+            )
+            ttk.Combobox(
+                sec_phrasing,
+                textvariable=self.source_modes[difficulty],
+                values=(
+                    "Automatic",
+                    "Drums",
+                    "Balanced",
+                    "Drums + Vocals",
+                    "Vocals + Inst",
+                    "All Balanced",
+                    "Vocals",
+                    "Guitar",
+                ),
+                state="readonly",
+                width=18,
+            ).grid(row=idx_c, column=1, sticky="w", pady=1)
+
+        # --- Drawer 2: Density, Highway & Big Notes (Collapsed by default) ---
+        sec_density = self._make_collapsible_section(
+            options, row=3, title="Density, Highway & Big Notes", expanded=False
+        )
+        self._add_slider(
+            sec_density,
             0,
             "Highway speed",
             self.highway_speed,
@@ -599,7 +715,7 @@ class TaikoWizard:
             default_value=self.cfg.settings.target_highway_speed,
         )
         self._add_slider(
-            controls,
+            sec_density,
             1,
             "Big-note sensitivity (higher = fewer big notes)",
             self.big_note_threshold,
@@ -609,29 +725,17 @@ class TaikoWizard:
             "{:.2f}",
             default_value=self.cfg.preset.big_note_threshold,
         )
-        self._add_slider(
-            controls,
-            2,
-            "Quiet-guitar threshold",
-            self.quiet_guitar_threshold,
-            0.1,
-            0.8,
-            0.05,
-            "{:.2f}",
-            default_value=self.cfg.settings.quiet_guitar_rms_threshold,
+        toggles_row = ttk.Frame(sec_density, style="Surface.TFrame")
+        toggles_row.grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 4))
+        ttk.Checkbutton(toggles_row, text="Enable Big Notes (3/4)", variable=self.enable_big_notes).pack(side="left", padx=(0, 16))
+        ttk.Checkbutton(toggles_row, text="Fold blast beats into drumrolls (off = keep fast notes)", variable=self.fold_blasts_to_rolls).pack(side="left")
+        ttk.Label(sec_density, text="Maximum density by difficulty", style="Muted.TLabel").grid(
+            row=3, column=0, columnspan=4, sticky="w", pady=(6, 0)
         )
-        ttk.Label(
-            controls,
-            text="Higher threshold simplifies more quiet guitar-only measures",
-            style="Muted.TLabel",
-        ).grid(row=3, column=1, columnspan=3, sticky="w")
-        ttk.Label(controls, text="Maximum density by difficulty", style="Muted.TLabel").grid(
-            row=4, column=0, columnspan=3, sticky="w", pady=(8, 0)
-        )
-        for row, difficulty in enumerate(("easy", "normal", "hard", "oni"), start=5):
+        for idx_d, difficulty in enumerate(("easy", "normal", "hard", "oni"), start=4):
             self._add_slider(
-                controls,
-                row,
+                sec_density,
+                idx_d,
                 difficulty.title(),
                 self.density_scales[difficulty],
                 50,
@@ -640,29 +744,15 @@ class TaikoWizard:
                 "{:.0f}%",
                 default_value=_DEFAULT_DENSITY_PERCENT,
             )
-        ttk.Label(controls, text="Source followed by each course", style="Muted.TLabel").grid(
-            row=9, column=0, columnspan=3, sticky="w", pady=(8, 0)
-        )
-        for row, difficulty in enumerate(("easy", "normal", "hard", "oni"), start=10):
-            ttk.Label(controls, text=difficulty.title()).grid(
-                row=row, column=0, sticky="w", padx=(0, 10)
-            )
-            ttk.Combobox(
-                controls,
-                textvariable=self.source_modes[difficulty],
-                values=("Automatic", "Drums", "Balanced", "Vocals", "Guitar"),
-                state="readonly",
-                width=14,
-            ).grid(row=row, column=1, sticky="w")
         ttk.Label(
-            controls,
+            sec_density,
             text="Repeat color variation (changes existing Don/Ka hits only)",
             style="Muted.TLabel",
-        ).grid(row=14, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        for row, difficulty in enumerate(("hard", "oni"), start=15):
+        ).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        for idx_v, difficulty in enumerate(("hard", "oni"), start=9):
             self._add_slider(
-                controls,
-                row,
+                sec_density,
+                idx_v,
                 difficulty.title(),
                 self.phrase_variations[difficulty],
                 0,
@@ -671,15 +761,18 @@ class TaikoWizard:
                 "{:.0f}%",
                 default_value=_DEFAULT_PHRASE_VARIATION[difficulty],
             )
-        ttk.Label(
-            controls,
-            text="Maximum gameplay fill rolls by course",
-            style="Muted.TLabel",
-        ).grid(row=17, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        for row, difficulty in enumerate(("easy", "normal", "hard", "oni"), start=18):
+
+        # --- Drawer 3: Groove Triples & Gameplay Rolls (Collapsed by default) ---
+        sec_triples = self._make_collapsible_section(
+            options, row=4, title="Groove Triples & Gameplay Rolls", expanded=False
+        )
+        ttk.Label(sec_triples, text="Maximum gameplay fill rolls by course", style="Muted.TLabel").grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 0)
+        )
+        for idx_r, difficulty in enumerate(("easy", "normal", "hard", "oni"), start=1):
             self._add_slider(
-                controls,
-                row,
+                sec_triples,
+                idx_r,
                 difficulty.title(),
                 self.fill_roll_caps[difficulty],
                 0,
@@ -688,18 +781,43 @@ class TaikoWizard:
                 "{:.0f}",
                 default_value=_DEFAULT_FILL_ROLLS_BY_COURSE[difficulty],
             )
-        ttk.Label(controls, text="Quiet intro treatment").grid(
-            row=22, column=0, sticky="w", padx=(0, 10), pady=(4, 0)
-        )
-        ttk.Combobox(
-            controls,
-            textvariable=self.quiet_guitar_behavior,
-            values=("One downbeat", "Leave empty"),
-            state="readonly",
-        ).grid(row=22, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(
+            sec_triples,
+            text="Groove triple-stroke density (0-100% of sparse repeating beats)",
+            style="Muted.TLabel",
+        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        for idx_t, difficulty in enumerate(("easy", "normal", "hard", "oni"), start=6):
+            self._add_slider(
+                sec_triples,
+                idx_t,
+                difficulty.title(),
+                self.groove_triple_densities[difficulty],
+                0,
+                100,
+                5,
+                "{:.0f}%",
+                default_value=_DEFAULT_GROOVE_TRIPLE_DENSITY_BY_COURSE[difficulty],
+            )
+        ttk.Label(
+            sec_triples,
+            text="Groove triple complexity by course (same-color vs alternating)",
+            style="Muted.TLabel",
+        ).grid(row=10, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        for idx_tc, difficulty in enumerate(("normal", "hard", "oni"), start=11):
+            self._add_slider(
+                sec_triples,
+                idx_tc,
+                f"{difficulty.title()} complexity",
+                self.groove_triple_complexities[difficulty],
+                0,
+                100,
+                5,
+                "{:.0f}%",
+                default_value=_DEFAULT_GROOVE_TRIPLE_COMPLEXITY_BY_COURSE[difficulty],
+            )
         self._add_slider(
-            controls,
-            23,
+            sec_triples,
+            14,
             "Groove triple max BPM",
             self.groove_triple_max_bpm,
             120,
@@ -709,8 +827,8 @@ class TaikoWizard:
             default_value=_DEFAULT_GROOVE_TRIPLE_MAX_BPM,
         )
         self._add_slider(
-            controls,
-            24,
+            sec_triples,
+            15,
             "Groove triple ending ramp",
             self.groove_triple_ramp,
             0,
@@ -719,43 +837,9 @@ class TaikoWizard:
             "{:.0f}%",
             default_value=_DEFAULT_GROOVE_TRIPLE_RAMP,
         )
-        ttk.Label(
-            controls,
-            text="Groove triple complexity by course (same-color vs alternating)",
-            style="Muted.TLabel",
-        ).grid(row=25, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        for row, difficulty in enumerate(("normal", "hard", "oni"), start=26):
-            self._add_slider(
-                controls,
-                row,
-                f"{difficulty.title()} complexity",
-                self.groove_triple_complexities[difficulty],
-                0,
-                100,
-                5,
-                "{:.0f}%",
-                default_value=_DEFAULT_GROOVE_TRIPLE_COMPLEXITY_BY_COURSE[difficulty],
-            )
-        ttk.Label(
-            controls,
-            text="Groove triple-stroke density (0-100% of sparse repeating beats)",
-            style="Muted.TLabel",
-        ).grid(row=29, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        for row, difficulty in enumerate(("easy", "normal", "hard", "oni"), start=30):
-            self._add_slider(
-                controls,
-                row,
-                difficulty.title(),
-                self.groove_triple_densities[difficulty],
-                0,
-                100,
-                5,
-                "{:.0f}%",
-                default_value=_DEFAULT_GROOVE_TRIPLE_DENSITY_BY_COURSE[difficulty],
-            )
         self._add_slider(
-            controls,
-            40,
+            sec_triples,
+            16,
             "Groove triple max hits/bar (dense beats)",
             self.groove_triple_max_hits,
             4,
@@ -764,20 +848,39 @@ class TaikoWizard:
             "{:.0f}",
             default_value=6,
         )
-        self._add_slider(
-            controls,
-            34,
-            "Section phrase variety (stem rotation)",
-            self.section_phrase_variety,
-            0,
-            100,
-            5,
-            "{:.0f}%",
-            default_value=35.0,
+
+        # --- Drawer 4: Stem Thresholds & Quiet Intro (Collapsed by default) ---
+        sec_stems = self._make_collapsible_section(
+            options, row=5, title="Stem Thresholds & Quiet Intro", expanded=False
         )
         self._add_slider(
-            controls,
-            35,
+            sec_stems,
+            0,
+            "Quiet-guitar threshold",
+            self.quiet_guitar_threshold,
+            0.1,
+            0.8,
+            0.05,
+            "{:.2f}",
+            default_value=self.cfg.settings.quiet_guitar_rms_threshold,
+        )
+        ttk.Label(
+            sec_stems,
+            text="Higher threshold simplifies more quiet guitar-only measures",
+            style="Muted.TLabel",
+        ).grid(row=1, column=1, columnspan=3, sticky="w")
+        ttk.Label(sec_stems, text="Quiet intro treatment").grid(
+            row=2, column=0, sticky="w", padx=(0, 10), pady=(4, 0)
+        )
+        ttk.Combobox(
+            sec_stems,
+            textvariable=self.quiet_guitar_behavior,
+            values=("One downbeat", "Leave empty"),
+            state="readonly",
+        ).grid(row=2, column=1, sticky="w", pady=(4, 0))
+        self._add_slider(
+            sec_stems,
+            3,
             "Vocal onset threshold (lower = more notes)",
             self.vocal_min_strength,
             0.15,
@@ -787,8 +890,8 @@ class TaikoWizard:
             default_value=0.36,
         )
         self._add_slider(
-            controls,
-            36,
+            sec_stems,
+            4,
             "Guitar onset threshold (lower = more riffs)",
             self.guitar_min_strength,
             0.20,
@@ -798,8 +901,8 @@ class TaikoWizard:
             default_value=0.58,
         )
         self._add_slider(
-            controls,
-            37,
+            sec_stems,
+            5,
             "Cymbal inclusion / sensitivity",
             self.cymbal_sensitivity,
             0,
@@ -808,48 +911,30 @@ class TaikoWizard:
             "{:.0f}%",
             default_value=100.0,
         )
-        ttk.Label(controls, text="Ride cymbal mode").grid(row=38, column=0, sticky="w", padx=(0, 10), pady=(4, 0))
+        ttk.Label(sec_stems, text="Ride cymbal mode").grid(row=6, column=0, sticky="w", padx=(0, 10), pady=(4, 0))
         ttk.Combobox(
-            controls,
+            sec_stems,
             textvariable=self.ride_cymbal_mode,
             values=tuple(self._ride_mode_labels.values()),
             state="readonly",
-        ).grid(row=37, column=1, sticky="w", pady=(4, 0))
-        toggles_row = ttk.Frame(controls, style="Surface.TFrame")
-        toggles_row.grid(row=39, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(toggles_row, text="Enable Big Notes (3/4)", variable=self.enable_big_notes).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(toggles_row, text="Fold blast beats into drumrolls (off = keep fast notes)", variable=self.fold_blasts_to_rolls).pack(side="left")
+        ).grid(row=6, column=1, sticky="w", pady=(4, 0))
 
-        prof_row = ttk.Frame(controls, style="Surface.TFrame")
-        prof_row.grid(row=40, column=0, columnspan=4, sticky="ew", pady=(10, 0))
-        ttk.Label(prof_row, text="Saved Slider Profile").pack(side="left", padx=(0, 8))
-        self.slider_profile_box = ttk.Combobox(
-            prof_row,
-            textvariable=self.selected_slider_profile,
-            values=sorted(self.saved_profiles.keys()),
-            width=22,
-        )
-        self.slider_profile_box.pack(side="left", padx=(0, 6))
-        ttk.Button(prof_row, text="Load", command=self._load_slider_profile).pack(side="left", padx=(0, 4))
-        ttk.Button(prof_row, text="Save", command=self._save_slider_profile).pack(side="left", padx=(0, 4))
-        ttk.Button(prof_row, text="Delete", command=self._delete_slider_profile).pack(side="left")
-
-        ttk.Label(options, text="Output folder").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=(8, 0))
+        ttk.Label(options, text="Output folder").grid(row=6, column=0, sticky="w", padx=(0, 10), pady=(10, 0))
         ttk.Entry(options, textvariable=self.songs_directory).grid(
-            row=3, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=(8, 0)
+            row=6, column=1, columnspan=2, sticky="ew", padx=(0, 8), pady=(10, 0)
         )
         ttk.Button(options, text="Choose folder…", command=self._browse_songs_folder).grid(
-            row=3, column=3, pady=(8, 0)
+            row=6, column=3, pady=(10, 0)
         )
         ttk.Button(options, text="Choose YataiDON.exe…", command=self._browse_game_executable).grid(
-            row=4, column=1, sticky="w", pady=(8, 0)
+            row=7, column=1, sticky="w", pady=(8, 0)
         )
         ttk.Label(
             options,
             textvariable=self.output_preview,
             style="Muted.TLabel",
             wraplength=800,
-        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ).grid(row=8, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
         ttk.Label(outer, text="4  Build progress", style="Section.TLabel").grid(
             row=5, column=0, sticky="w", pady=(2, 6)
@@ -897,6 +982,41 @@ class TaikoWizard:
             "Analyze the selected audio and optional MIDI, generate all four courses, "
             "and export the chart to the selected YataiDON/OpenTaiko Songs folder.",
         )
+
+    def _make_collapsible_section(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        title: str,
+        *,
+        expanded: bool = False,
+    ) -> ttk.Frame:
+        wrapper = ttk.Frame(parent, style="Surface.TFrame")
+        wrapper.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(6, 2))
+        wrapper.columnconfigure(0, weight=1)
+
+        is_open = tk.BooleanVar(value=expanded)
+        btn_text = tk.StringVar(value=f"{'▾' if expanded else '▸'}  {title}")
+        body = ttk.Frame(wrapper, style="Surface.TFrame", padding=(12, 6, 4, 6))
+        body.columnconfigure(1, weight=1)
+        if expanded:
+            body.grid(row=1, column=0, sticky="ew")
+
+        def toggle() -> None:
+            next_state = not is_open.get()
+            is_open.set(next_state)
+            if next_state:
+                btn_text.set(f"▾  {title}")
+                body.grid(row=1, column=0, sticky="ew")
+            else:
+                btn_text.set(f"▸  {title}")
+                body.grid_remove()
+
+        ttk.Button(wrapper, textvariable=btn_text, command=toggle).grid(row=0, column=0, sticky="w")
+        wrapper._toggle_fn = toggle  # type: ignore[attr-defined]
+        wrapper._is_open_var = is_open  # type: ignore[attr-defined]
+        wrapper._body_frame = body  # type: ignore[attr-defined]
+        return body
 
     def _add_slider(
         self,
@@ -1305,7 +1425,26 @@ class TaikoWizard:
             if d in self.groove_triple_densities: self.groove_triple_densities[d].set(den * 100.0)
         for d, comp in c.groove_triple_complexity_by_course.items():
             if d in self.groove_triple_complexities: self.groove_triple_complexities[d].set(comp * 100.0)
-        source_labels = {"auto": "Automatic", "drums": "Drums", "hybrid": "Balanced", "vocals": "Vocals", "guitar": "Guitar"}
+        if c.default_blend_style is not None:
+            self.default_blend_style.set(self._blend_mode_labels.get(c.default_blend_style, "Simultaneous (Layered)"))
+        else:
+            self.default_blend_style.set(self._blend_mode_labels["simultaneous"])
+        if c.default_phrasing_lead is not None:
+            self.default_phrasing_lead.set(self._lead_source_labels.get(c.default_phrasing_lead, "Auto"))
+        else:
+            self.default_phrasing_lead.set(self._lead_source_labels["auto"])
+        if c.selective_phrase_parts is not None:
+            self.selective_phrase_parts.set(bool(c.selective_phrase_parts))
+        source_labels = {
+            "auto": "Automatic",
+            "drums": "Drums",
+            "hybrid": "Balanced",
+            "drums_vocals": "Drums + Vocals",
+            "vocals_guitar": "Vocals + Inst",
+            "all_balanced": "All Balanced",
+            "vocals": "Vocals",
+            "guitar": "Guitar",
+        }
         for d, rule in c.difficulty_overrides.items():
             if d in self.density_scales and rule.density_scale is not None:
                 self.density_scales[d].set(rule.density_scale * 100.0)
@@ -1327,6 +1466,9 @@ class TaikoWizard:
             "Automatic": "auto",
             "Drums": "drums",
             "Balanced": "hybrid",
+            "Drums + Vocals": "drums_vocals",
+            "Vocals + Inst": "vocals_guitar",
+            "All Balanced": "all_balanced",
             "Vocals": "vocals",
             "Guitar": "guitar",
         }
@@ -1406,6 +1548,17 @@ class TaikoWizard:
             vocal_min_strength=(float(self.vocal_min_strength.get()) if hasattr(self, "vocal_min_strength") else 0.36),
             guitar_min_strength=(float(self.guitar_min_strength.get()) if hasattr(self, "guitar_min_strength") else 0.58),
             cymbal_sensitivity=(float(self.cymbal_sensitivity.get()) / 100.0 if hasattr(self, "cymbal_sensitivity") else 1.0),
+            default_blend_style=(
+                None
+                if self._blend_label_to_mode.get(self.default_blend_style.get(), "simultaneous") == "simultaneous"
+                else self._blend_label_to_mode.get(self.default_blend_style.get(), "simultaneous")
+            ) if hasattr(self, "default_blend_style") else None,
+            default_phrasing_lead=(
+                None
+                if self._lead_label_to_mode.get(self.default_phrasing_lead.get(), "auto") == "auto"
+                else self._lead_label_to_mode.get(self.default_phrasing_lead.get(), "auto")
+            ) if hasattr(self, "default_phrasing_lead") else None,
+            selective_phrase_parts=bool(self.selective_phrase_parts.get()) if hasattr(self, "selective_phrase_parts") else None,
             difficulty_overrides=difficulty_overrides,
         )
 

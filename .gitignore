@@ -1,4 +1,4 @@
-.venv/
+﻿.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -7,20 +7,29 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
 # Personal source audio/MIDI and generated song workspaces/charts
 /incoming_midi/
 /workspace/
+
 # Machine-specific editor and wizard settings
 /.vscode/
 configs/wizard_settings.json
 configs/wizard_settings.json.tmp
-# Local secrets and transient output
+
+# Local secrets, logs, backups, and transient scripts
 .env
 .env.*
 !.env.example
 *.log
 *.tmp
+*.bak
+HANDOVER.md
+/_*.py
+Thumbs.db
+.DS_Store
 
+# Managed bootstrap & deployment artifacts
 /.tools/
 /.python/
 /.uv-cache/
@@ -31,3 +40,6 @@ configs/wizard_settings.json.tmp
 /Create-TaikoLab-Deployment.ps1
 /Fix-TaikoLab-Deployment.ps1
 /Fix-CUDA-Index.ps1
+
+songs_to_download.txt
+

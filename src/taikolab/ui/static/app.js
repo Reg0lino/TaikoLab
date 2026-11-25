@@ -27,6 +27,8 @@ let state = {
   selectedSectionIdx: 0,
   loopSection: false,
   lastPlayTime: 0,
+  lastAudioSchedTime: null,
+  hitClickOffsetMs: 0,
   viewTime: 0,
   scrubbingLane: false,
   tapArmed: false,
@@ -115,10 +117,10 @@ function ensureAudioCtx() {
   }
 }
 
-function playTaikoSound(noteCode) {
+function playTaikoSound(noteCode, delaySec = 0) {
   if (!document.getElementById("chkHitsounds").checked) return;
   ensureAudioCtx();
-  const now = audioCtx.currentTime;
+  const now = audioCtx.currentTime + Math.max(0, delaySec);
 
   if (noteCode === 1 || noteCode === 3) {
     const osc = audioCtx.createOscillator();
@@ -553,6 +555,13 @@ function populateChartControls() {
   const speed = ov.target_highway_speed ?? 101.343;
   document.getElementById("ctrlHighwaySpeed").value = String(speed);
   document.getElementById("lblCtrlSpeed").textContent = Number(speed).toFixed(0);
+  const laneSpeedInp = document.getElementById("laneHighwaySpeed");
+  const laneSpeedLbl = document.getElementById("lblLaneSpeed");
+  if (laneSpeedInp && laneSpeedLbl) {
+    laneSpeedInp.disabled = false;
+    laneSpeedInp.value = String(Math.round(Number(speed)));
+    laneSpeedLbl.textContent = Number(speed).toFixed(0);
+  }
 
   const big = ov.big_note_threshold ?? 0.88;
   document.getElementById("ctrlBigNote").value = String(big);
@@ -627,6 +636,9 @@ function populateChartControls() {
   document.getElementById("ctrlRideMode").value = ov.ride_cymbal_mode || "accents_and_solo";
   document.getElementById("ctrlEnableBigNotes").checked = ov.enable_big_notes !== false;
   document.getElementById("ctrlFoldBlasts").checked = Boolean(ov.fold_blasts_to_rolls);
+  document.getElementById("ctrlDefaultBlendStyle").value = ov.default_blend_style || "simultaneous";
+  document.getElementById("ctrlDefaultPhrasingLead").value = ov.default_phrasing_lead || "auto";
+  document.getElementById("ctrlSelectivePhraseParts").checked = Boolean(ov.selective_phrase_parts);
 }
 
 function applyChartControlsToOverrides() {
@@ -659,6 +671,11 @@ function applyChartControlsToOverrides() {
   ov.ride_cymbal_mode = document.getElementById("ctrlRideMode").value;
   ov.enable_big_notes = document.getElementById("ctrlEnableBigNotes").checked;
   ov.fold_blasts_to_rolls = document.getElementById("ctrlFoldBlasts").checked;
+  const defBlend = document.getElementById("ctrlDefaultBlendStyle").value;
+  ov.default_blend_style = defBlend === "simultaneous" ? null : defBlend;
+  const defLead = document.getElementById("ctrlDefaultPhrasingLead").value;
+  ov.default_phrasing_lead = defLead === "auto" ? null : defLead;
+  ov.selective_phrase_parts = document.getElementById("ctrlSelectivePhraseParts").checked;
 
   if (!ov.difficulty_overrides) ov.difficulty_overrides = {};
   const existing = ov.difficulty_overrides[diff] || {};
@@ -956,10 +973,15 @@ function renderRegions(force = false) {
 
 function formatSectionBadge(sec) {
   const custom = sec.difficulty_rules ? Object.entries(sec.difficulty_rules) : [];
+  let base = sec.follow_mode || "auto";
   if (custom.length > 0) {
-    return custom.map(([d, r]) => `${d[0].toUpperCase()}:${r.follow_mode}`).join(" ");
+    base = custom.map(([d, r]) => `${d[0].toUpperCase()}:${r.follow_mode}`).join(" ");
   }
-  return sec.follow_mode || "auto";
+  const bStyle = sec.blend_style && sec.blend_style !== "simultaneous"
+    ? sec.blend_style
+    : (custom.find(([, r]) => r.blend_style && r.blend_style !== "simultaneous")?.[1]?.blend_style || "");
+  const blendTag = bStyle ? ` [${bStyle.replace("alt_", "").toUpperCase()}]` : "";
+  return base + blendTag;
 }
 
 function renderSectionList() {
@@ -1237,6 +1259,13 @@ function populateInspector() {
   document.getElementById("secMaxNps").value = activeRule.max_nps || "";
   document.getElementById("secBigNotes").checked = activeRule.enable_big_notes !== false;
   document.getElementById("secFoldRolls").checked = activeRule.fold_blasts_to_rolls !== false;
+  const blendEl = document.getElementById("secBlendStyle");
+  const leadEl = document.getElementById("secPhrasingLead");
+  if (blendEl && leadEl) {
+    blendEl.value = activeRule.blend_style || "simultaneous";
+    leadEl.value = activeRule.phrasing_lead || "auto";
+    leadEl.disabled = blendEl.value === "simultaneous";
+  }
 }
 
 function buildSectionRuleFromInspector() {
@@ -1248,6 +1277,8 @@ function buildSectionRuleFromInspector() {
     max_nps: maxNpsStr ? parseFloat(maxNpsStr) : null,
     enable_big_notes: document.getElementById("secBigNotes").checked,
     fold_blasts_to_rolls: document.getElementById("secFoldRolls").checked,
+    blend_style: document.getElementById("secBlendStyle")?.value || "simultaneous",
+    phrasing_lead: document.getElementById("secPhrasingLead")?.value || "auto",
   };
 }
 
@@ -1274,7 +1305,7 @@ function readInspectorIntoSelected(targetDifficulties = null) {
   if (Array.isArray(targetDifficulties) && targetDifficulties.length > 0) {
     if (!sec.difficulty_rules) sec.difficulty_rules = {};
     for (const d of targetDifficulties) {
-      if (rule.follow_mode === "auto" && rule.drum_sensitivity === 1 && rule.vocal_sensitivity === 1 && !rule.max_nps && rule.enable_big_notes) {
+      if (rule.follow_mode === "auto" && rule.drum_sensitivity === 1 && rule.vocal_sensitivity === 1 && !rule.max_nps && rule.enable_big_notes && rule.blend_style === "simultaneous" && rule.phrasing_lead === "auto") {
         delete sec.difficulty_rules[d];
       } else {
         sec.difficulty_rules[d] = { ...rule };
@@ -1289,6 +1320,8 @@ function readInspectorIntoSelected(targetDifficulties = null) {
   sec.max_nps = rule.max_nps;
   sec.enable_big_notes = rule.enable_big_notes;
   sec.fold_blasts_to_rolls = rule.fold_blasts_to_rolls;
+  sec.blend_style = rule.blend_style;
+  sec.phrasing_lead = rule.phrasing_lead;
 }
 
 const COURSE_LABELS = {
@@ -1549,6 +1582,10 @@ async function loadImportedTja(importId, sourcePath = null) {
   songSelect.disabled = true;
   document.getElementById("btnExport").textContent = "Save TJA";
   document.getElementById("presetSelect").disabled = true;
+  const laneSpeedInpTja = document.getElementById("laneHighwaySpeed");
+  const laneSpeedLblTja = document.getElementById("lblLaneSpeed");
+  if (laneSpeedInpTja) laneSpeedInpTja.disabled = true;
+  if (laneSpeedLblTja) laneSpeedLblTja.textContent = "--";
   document.getElementById("presetSelect").value = state.data.overrides.preset;
   document.getElementById("globalOffsetInput").value = state.data.overrides.global_offset_ms || 0;
   document.getElementById("tapLatencyInput").value = state.data.overrides.tap_latency_ms ?? 0;
@@ -1597,7 +1634,64 @@ async function loadImportedTja(importId, sourcePath = null) {
   }
 }
 
+let _uiPrefSaveTimer = null;
+function persistHitClickOffset(valMs, immediate = false) {
+  const clamped = Math.max(-250, Math.min(250, Math.round(Number(valMs) || 0)));
+  state.hitClickOffsetMs = clamped;
+  try {
+    localStorage.setItem("taikolab-hit-click-offset-ms", String(clamped));
+  } catch (_e) {}
+  const send = () => {
+    fetch("/api/ui-preferences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hit_click_offset_ms: clamped }),
+    }).catch(() => {});
+  };
+  clearTimeout(_uiPrefSaveTimer);
+  if (immediate) send();
+  else _uiPrefSaveTimer = setTimeout(send, 250);
+}
+
+async function loadUiPreferences() {
+  const inp = document.getElementById("hitClickOffsetMs");
+  if (!inp) return;
+  let val = 0;
+  try {
+    const cached = localStorage.getItem("taikolab-hit-click-offset-ms");
+    if (cached !== null && cached !== "") val = Math.round(Number(cached) || 0);
+  } catch (_e) {}
+  try {
+    const res = await fetch("/api/ui-preferences");
+    if (res.ok) {
+      const data = await res.json();
+      if (typeof data.hit_click_offset_ms === "number") {
+        val = Math.round(data.hit_click_offset_ms);
+      }
+    }
+  } catch (_e) {}
+  val = Math.max(-250, Math.min(250, val));
+  state.hitClickOffsetMs = val;
+  inp.value = String(val);
+}
+
+const hitClickOffsetInput = document.getElementById("hitClickOffsetMs");
+if (hitClickOffsetInput) {
+  hitClickOffsetInput.addEventListener("input", (e) => {
+    persistHitClickOffset(e.target.value, false);
+  });
+  hitClickOffsetInput.addEventListener("change", (e) => {
+    const clamped = Math.max(-250, Math.min(250, Math.round(Number(e.target.value) || 0)));
+    e.target.value = String(clamped);
+    persistHitClickOffset(clamped, true);
+  });
+  hitClickOffsetInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") e.currentTarget.blur();
+  });
+}
+
 async function init() {
+  await loadUiPreferences();
   const importId = new URLSearchParams(window.location.search).get("import_id");
   if (importId) {
     await loadImportedTja(importId);
@@ -1688,20 +1782,39 @@ function drawLoop() {
 
     if (wavesurfer && wavesurfer.isPlaying()) {
       const prevT = state.lastPlayTime;
-      if (curT > prevT && (curT - prevT) < 0.15) {
-        for (const n of notes) {
-          if (n.time > prevT && n.time <= curT && document.getElementById("chkHitsounds").checked) {
-            playTaikoSound(n.code);
+      const playbackRate = parseFloat(document.getElementById("speedSelect").value || "1") || 1;
+      const clickOffsetSec = (state.hitClickOffsetMs || 0) / 1000.0;
+      const lookaheadSec = 0.025 * playbackRate;
+
+      if (curT < prevT || (curT - prevT) >= 0.15) {
+        state.lastAudioSchedTime = curT;
+      } else if (state.lastAudioSchedTime === null) {
+        state.lastAudioSchedTime = prevT;
+      }
+
+      const winStart = state.lastAudioSchedTime;
+      const winEnd = curT + lookaheadSec;
+      if (winEnd > winStart) {
+        if (document.getElementById("chkHitsounds").checked) {
+          for (const n of notes) {
+            const triggerT = n.time + clickOffsetSec;
+            if (triggerT >= winStart && triggerT < winEnd) {
+              const delaySec = Math.max(0, (triggerT - curT) / playbackRate);
+              playTaikoSound(n.code, delaySec);
+            }
           }
         }
-        if (document.getElementById("chkReferenceClicks").checked) {
+        if (document.getElementById("chkReferenceClicks").checked && curT > prevT && (curT - prevT) < 0.15) {
           for (const hit of state.referenceHits) {
             if (hit.time_sec > prevT && hit.time_sec <= curT) {
               playReferenceSound(hit.drum_class);
             }
           }
         }
+        state.lastAudioSchedTime = winEnd;
       }
+    } else {
+      state.lastAudioSchedTime = null;
     }
     state.lastPlayTime = curT;
 
@@ -3180,6 +3293,38 @@ const bindSliderPair = (inputId, labelId, fmt, defaultVal, resetBtnId) => {
 };
 
 bindSliderPair("ctrlHighwaySpeed", "lblCtrlSpeed", (v) => v.toFixed(0), 101.343, "btnResetCtrlSpeed");
+
+const laneSpeedInpEl = document.getElementById("laneHighwaySpeed");
+const laneSpeedLblEl = document.getElementById("lblLaneSpeed");
+if (laneSpeedInpEl && laneSpeedLblEl) {
+  laneSpeedInpEl.addEventListener("input", () => {
+    const v = Math.round(parseFloat(laneSpeedInpEl.value || "101"));
+    laneSpeedLblEl.textContent = String(v);
+    const ctrlInp = document.getElementById("ctrlHighwaySpeed");
+    const ctrlLbl = document.getElementById("lblCtrlSpeed");
+    if (ctrlInp) ctrlInp.value = String(v);
+    if (ctrlLbl) ctrlLbl.textContent = String(v);
+  });
+  laneSpeedInpEl.addEventListener("change", () => {
+    if (!state.data || state.importId) return;
+    const v = parseFloat(laneSpeedInpEl.value || "101");
+    const ctrlInp = document.getElementById("ctrlHighwaySpeed");
+    if (ctrlInp) ctrlInp.value = String(v);
+    applyChartControlsToOverrides();
+    state.editSeq += 1;
+    rebuildChart(false);
+    showToast(`Highway speed set to ${Math.round(v)}`);
+  });
+}
+document.getElementById("ctrlHighwaySpeed")?.addEventListener("input", (e) => {
+  const v = Math.round(parseFloat(e.target.value || "101"));
+  if (laneSpeedInpEl) laneSpeedInpEl.value = String(v);
+  if (laneSpeedLblEl) laneSpeedLblEl.textContent = String(v);
+});
+document.getElementById("btnResetCtrlSpeed")?.addEventListener("click", () => {
+  if (laneSpeedInpEl) laneSpeedInpEl.value = "101";
+  if (laneSpeedLblEl) laneSpeedLblEl.textContent = "101";
+});
 bindSliderPair("ctrlBigNote", "lblCtrlBig", (v) => v.toFixed(2), 0.88, "btnResetCtrlBig");
 bindSliderPair("ctrlQuietThreshold", "lblCtrlQuiet", (v) => v.toFixed(2), 0.25, "btnResetCtrlQuiet");
 bindSliderPair("ctrlCourseDensity", "lblCtrlDensity", (v) => `${Math.round(v)}%`, 100, "btnResetCtrlDensity");
@@ -3212,7 +3357,7 @@ bindSliderPair("ctrlSectionVariety", "lblCtrlSecVariety", (v) => `${Math.round(v
 bindSliderPair("ctrlVocalMin", "lblCtrlVocalMin", (v) => v.toFixed(2), 0.36, "btnResetCtrlVocalMin");
 bindSliderPair("ctrlGuitarMin", "lblCtrlGuitarMin", (v) => v.toFixed(2), 0.58, "btnResetCtrlGuitarMin");
 bindSliderPair("ctrlCymbalSens", "lblCtrlCymbalSens", (v) => `${Math.round(v)}%`, 100, "btnResetCtrlCymbalSens");
-["ctrlRideMode", "ctrlEnableBigNotes", "ctrlFoldBlasts"].forEach((id) => {
+["ctrlRideMode", "ctrlEnableBigNotes", "ctrlFoldBlasts", "ctrlDefaultBlendStyle", "ctrlDefaultPhrasingLead", "ctrlSelectivePhraseParts"].forEach((id) => {
   document.getElementById(id).addEventListener("change", () => {
     applyChartControlsToOverrides();
     state.editSeq += 1;
@@ -3597,6 +3742,11 @@ document.getElementById("btnAutoSplitSections").addEventListener("click", async 
 
 document.getElementById("secFollow").addEventListener("change", (e) => {
   syncSourceCheckboxesFromFollow(e.target.value);
+});
+
+document.getElementById("secBlendStyle")?.addEventListener("change", (e) => {
+  const leadEl = document.getElementById("secPhrasingLead");
+  if (leadEl) leadEl.disabled = e.target.value === "simultaneous";
 });
 
 ["secBpmMult", "secMeter"].forEach((id) => {
@@ -4239,6 +4389,8 @@ function renderSectionMatrixModal() {
       ? String(rule.groove_triple_max_hits)
       : baseMaxHits;
     const invChecked = Boolean(rule.invert_colors);
+    const blendVal = rule.blend_style || "simultaneous";
+    const leadVal = rule.phrasing_lead || "auto";
 
     const tr = document.createElement("tr");
     tr.dataset.secIdx = String(idx);
@@ -4257,6 +4409,22 @@ function renderSectionMatrixModal() {
           </div>
           <select class="mx-follow">
             ${Object.entries(MATRIX_MODE_LABELS).map(([k, txt]) => `<option value="${k}" ${k === mode ? "selected" : ""}>${txt}</option>`).join("")}
+          </select>
+        </div>
+      </td>
+      <td>
+        <div class="matrix-blend-cell">
+          <select class="mx-blend" title="Simultaneous (layered) or Alternating call-and-response">
+            <option value="simultaneous" ${blendVal === "simultaneous" ? "selected" : ""}>Simultaneous (Layered)</option>
+            <option value="alt_2bar" ${blendVal === "alt_2bar" ? "selected" : ""}>Alt 2-Bar</option>
+            <option value="alt_4bar" ${blendVal === "alt_4bar" ? "selected" : ""}>Alt 4-Bar</option>
+            <option value="adaptive" ${blendVal === "adaptive" ? "selected" : ""}>Adaptive (Phrase)</option>
+          </select>
+          <select class="mx-lead" ${blendVal === "simultaneous" ? "disabled" : ""} title="Which source takes the lead first when alternating">
+            <option value="auto" ${leadVal === "auto" ? "selected" : ""}>Lead: Auto</option>
+            <option value="vocals" ${leadVal === "vocals" ? "selected" : ""}>Lead: Vocals</option>
+            <option value="drums" ${leadVal === "drums" ? "selected" : ""}>Lead: Drums</option>
+            <option value="instruments" ${leadVal === "instruments" ? "selected" : ""}>Lead: Instruments</option>
           </select>
         </div>
       </td>
@@ -4288,7 +4456,13 @@ function renderSectionMatrixModal() {
       chkG.checked = ng;
       markDirty();
     });
-    tr.querySelectorAll(".mx-speed, .mx-density, .mx-triples, .mx-maxhits, .mx-invert").forEach((el) => {
+    const selBlend = tr.querySelector(".mx-blend");
+    const selLead = tr.querySelector(".mx-lead");
+    selBlend.addEventListener("change", () => {
+      selLead.disabled = selBlend.value === "simultaneous";
+      markDirty();
+    });
+    tr.querySelectorAll(".mx-lead, .mx-speed, .mx-density, .mx-triples, .mx-maxhits, .mx-invert").forEach((el) => {
       el.addEventListener("change", markDirty);
     });
     tr.querySelector(".mx-jump").addEventListener("click", () => {
@@ -4329,6 +4503,8 @@ function applySectionMatrixToOverrides() {
     const hitsRaw = tr.querySelector(".mx-maxhits").value.trim();
     const maxHits = hitsRaw !== "" ? Math.max(4, Math.min(10, parseInt(hitsRaw, 10))) : null;
     const invertColors = tr.querySelector(".mx-invert").checked;
+    const blendStyle = tr.querySelector(".mx-blend").value;
+    const phrasingLead = tr.querySelector(".mx-lead").value;
 
     const baseRule = baselineRuleForSection(sec);
     const newRule = {
@@ -4343,6 +4519,8 @@ function applySectionMatrixToOverrides() {
       groove_triple_density: triDen,
       groove_triple_max_hits: maxHits,
       invert_colors: invertColors,
+      blend_style: blendStyle,
+      phrasing_lead: phrasingLead,
     };
 
     if (!sec.difficulty_rules) sec.difficulty_rules = {};
@@ -4353,6 +4531,8 @@ function applySectionMatrixToOverrides() {
       sec.groove_triple_density = triDen;
       sec.groove_triple_max_hits = maxHits;
       sec.invert_colors = invertColors;
+      sec.blend_style = blendStyle;
+      sec.phrasing_lead = phrasingLead;
     }
     for (const d of targetDiffs) {
       sec.difficulty_rules[d] = { ...newRule };
@@ -4389,6 +4569,8 @@ document.getElementById("btnResetSectionMatrix").addEventListener("click", async
     sec.groove_triple_density = null;
     sec.groove_triple_max_hits = null;
     sec.invert_colors = false;
+    sec.blend_style = "simultaneous";
+    sec.phrasing_lead = "auto";
     sec.follow_mode = "auto";
     sec.difficulty_rules = {};
   });

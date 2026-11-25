@@ -851,4 +851,26 @@ def create_app() -> FastAPI:
         save_wizard_preferences(cfg.root_dir, slider_profiles=profiles)
         return {"profiles": profiles}
 
+    @app.get("/api/ui-preferences")
+    def get_ui_preferences():
+        cfg = load_config()
+        prefs = load_wizard_preferences(cfg.root_dir)
+        raw = prefs.get("hit_click_offset_ms", 0.0)
+        try:
+            offset_ms = float(raw)
+        except (TypeError, ValueError):
+            offset_ms = 0.0
+        return {"hit_click_offset_ms": max(-250.0, min(250.0, offset_ms))}
+
+    @app.post("/api/ui-preferences")
+    def save_ui_preferences_api(payload: dict):
+        cfg = load_config()
+        raw = payload.get("hit_click_offset_ms", 0.0)
+        try:
+            offset_ms = max(-250.0, min(250.0, float(raw)))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="hit_click_offset_ms must be a number")
+        save_wizard_preferences(cfg.root_dir, hit_click_offset_ms=offset_ms)
+        return {"hit_click_offset_ms": offset_ms}
+
     return app

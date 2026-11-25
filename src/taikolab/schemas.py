@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, model_validator
 
 DrumClass = Literal["kick", "snare", "hihat", "tom", "crash", "ride", "unknown"]
 DifficultyLevel = Literal["easy", "normal", "hard", "oni", "ura"]
+BlendStyle = Literal["simultaneous", "alt_2bar", "alt_4bar", "adaptive"]
+PhrasingLead = Literal["auto", "vocals", "drums", "instruments"]
 FollowMode = Literal[
     "auto",
     "drums",
@@ -142,6 +144,8 @@ class SectionDifficultyRule(BaseModel):
     groove_triple_density: float | None = Field(default=None, ge=0.0, le=1.0)
     groove_triple_max_hits: int | None = Field(default=None, ge=4, le=10)
     invert_colors: bool = False
+    blend_style: BlendStyle = "simultaneous"
+    phrasing_lead: PhrasingLead = "auto"
 
 
 class SectionOverride(BaseModel):
@@ -164,6 +168,8 @@ class SectionOverride(BaseModel):
     groove_triple_density: float | None = Field(default=None, ge=0.0, le=1.0)
     groove_triple_max_hits: int | None = Field(default=None, ge=4, le=10)
     invert_colors: bool = False
+    blend_style: BlendStyle = "simultaneous"
+    phrasing_lead: PhrasingLead = "auto"
     difficulty_rules: dict[DifficultyLevel, SectionDifficultyRule] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -186,6 +192,8 @@ class DifficultyRuleOverride(BaseModel):
     star_rating: int | None = Field(default=None, ge=1, le=12)
     density_scale: float | None = Field(default=None, ge=0.5, le=1.5)
     phrase_variation: float | None = Field(default=None, ge=0.0, le=1.0)
+    blend_style: BlendStyle | None = None
+    phrasing_lead: PhrasingLead | None = None
 
 
 class ChartControlSettings(BaseModel):
@@ -194,7 +202,6 @@ class ChartControlSettings(BaseModel):
     quiet_guitar_rms_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     quiet_guitar_behavior: Literal["downbeat", "empty"] | None = None
     fill_rolls_by_course: dict[DifficultyLevel, int] = Field(default_factory=dict)
-    # Read older saved settings that used one cap for every course.
     fill_rolls_per_course: int | None = Field(default=None, ge=0, le=12)
     groove_triple_density_by_course: dict[DifficultyLevel, float] = Field(default_factory=dict)
     groove_triples_by_course: dict[DifficultyLevel, int] = Field(default_factory=dict)
@@ -211,6 +218,9 @@ class ChartControlSettings(BaseModel):
     cymbal_sensitivity: float | None = Field(default=None, ge=0.0, le=2.0)
     vocal_min_strength: float | None = Field(default=None, ge=0.1, le=0.95)
     guitar_min_strength: float | None = Field(default=None, ge=0.1, le=0.95)
+    default_blend_style: BlendStyle | None = None
+    default_phrasing_lead: PhrasingLead | None = None
+    selective_phrase_parts: bool | None = None
     difficulty_overrides: dict[DifficultyLevel, DifficultyRuleOverride] = Field(
         default_factory=dict
     )

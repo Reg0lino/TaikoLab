@@ -59,9 +59,8 @@ def apply_guitar_fusion(
                 is_beat = (s_idx % beat_step) == 0
                 if plan.enable_big_notes and ev.strength >= cfg.preset.big_note_threshold and s_idx == 0:
                     note = TaikoNote.BIG_DON
-                elif is_beat:
+                elif is_beat and not solo_toggle:
                     note = TaikoNote.DON
-                    solo_toggle = False
                 else:
                     solo_toggle = not solo_toggle
                     note = TaikoNote.KAT if solo_toggle else TaikoNote.DON
